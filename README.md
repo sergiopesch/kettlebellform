@@ -1,2 +1,2 @@
 # kettlebellform
-Created with StackBlitz ⚡️
+
