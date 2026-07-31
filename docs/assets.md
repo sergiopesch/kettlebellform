@@ -1,19 +1,34 @@
 # Visual Assets
 
-## README Hero
+## Product screenshots
 
-Path: `docs/assets/kettlebellform-readme-hero.png`
+Paths:
 
-Generated with the built-in image generation tool for the project README.
+- `docs/screenshots/kb-form-preview-desktop.jpg`
+- `docs/screenshots/kb-form-camera-setup.jpg`
+- `docs/screenshots/kb-form-camera-setup-mobile.jpg`
 
-Prompt summary:
-
-```text
-Create a polished 16:9 README hero image for a professional AI kettlebell form coaching web app. Show a side-view athlete performing a two-hand kettlebell swing while the live video feed transforms into semi-transparent body volume, ivory skeleton, colored muscle layers, Gaussian correction fields, and a depth trail. Use a dark minimal sports-science interface with no readable text, logos, or watermarks.
-```
+These are browser captures of the implemented setup and camera-free preview states. They are used by the README and the public portfolio page. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
 
 ## Favicon
 
 Path: `public/favicon.svg`
 
-The favicon is a deterministic SVG asset built directly in the repository. It combines the app's kettlebell mark, skeletal alignment cue, muscle-gradient cue, and teal Gaussian field cue so the browser icon stays crisp at small sizes.
+The favicon is a deterministic repository asset designed to stay legible at browser-icon sizes.
+
+## Coaching preview
+
+Paths:
+
+- `public/demo-swing.png` — camera-free source frame and subdued setup reference.
+- `public/demo-swing-overlay.png` — the same frame with an illustrative pose-tracking overlay.
+
+Both assets were produced with the built-in ImageGen tool and are workspace-bound. Prompt summary: preserve a realistic side-profile athlete performing a two-hand shoulder-height kettlebell swing in a restrained dark gym; for the overlay variant, add only a thin mineral-lime landmark skeleton and subtle dotted bell arc, with no text, scores, UI chrome, extra people, or extra equipment.
+
+The overlay is labelled as an interactive sample in the product. It is not presented as a real measurement. Live-camera landmarks remain code-driven.
+
+## Generated runtime assets
+
+`npm ci` creates the ignored `public/vendor/mediapipe/0.10.35/` and `public/models/` directories. The WASM loader and binary are copied from the exact locked npm dependency. The revisioned pose model is downloaded during installation and accepted only when it matches the SHA-256 digest recorded in `scripts/prepare-model-assets.mjs`.
+
+These generated runtime files are included in the production build and served from the application origin; they are intentionally not committed as duplicate binary artifacts.

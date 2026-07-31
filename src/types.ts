@@ -3,7 +3,7 @@ import type { Vec2, Vec3 } from "./lib/geometry";
 
 export type ExperienceLevel = "new" | "trained" | "advanced";
 
-export type CoachingGoal = "technique" | "power" | "rehab";
+export type CoachingGoal = "technique" | "power" | "conditioning";
 
 export type AnatomyLayerId = "body" | "muscles" | "skeleton" | "gaussian";
 
@@ -76,6 +76,7 @@ export type JointRisk = {
 };
 
 export type AnalysisFrame = {
+  assessmentStatus: "assessed" | "unassessed";
   phase: SwingPhase;
   repCount: number;
   score: number;

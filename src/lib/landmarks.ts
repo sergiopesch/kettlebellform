@@ -34,8 +34,6 @@ export const POSE = {
   rightFootIndex: 32
 } as const;
 
-export type LandmarkName = keyof typeof POSE;
-
 export const SKELETON_CONNECTIONS: Array<[number, number]> = [
   [POSE.leftShoulder, POSE.rightShoulder],
   [POSE.leftShoulder, POSE.leftElbow],

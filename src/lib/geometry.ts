@@ -15,10 +15,6 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
 export function toDegrees(radians: number): number {
   return (radians * 180) / Math.PI;
 }
@@ -45,14 +41,6 @@ export function length3(v: Vec3): number {
 
 export function distance3(a: Vec3, b: Vec3): number {
   return length3(sub3(a, b));
-}
-
-export function normalize3(v: Vec3): Vec3 {
-  const length = length3(v);
-  if (length < 1e-6) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  return scale3(v, 1 / length);
 }
 
 export function midpoint3(a: Vec3, b: Vec3): Vec3 {
@@ -131,15 +119,11 @@ export function asVec2(landmark: NormalizedLandmark): Vec2 {
 }
 
 export function visibilityOf(landmarks: Array<Landmark | NormalizedLandmark>, indices: number[]): number {
-  const values = indices
-    .map((index) => landmarks[index]?.visibility ?? 0)
-    .filter((value) => Number.isFinite(value));
+  const values = indices.map((index) => {
+    const visibility = landmarks[index]?.visibility;
+    return Number.isFinite(visibility) ? clamp(visibility ?? 0, 0, 1) : 0;
+  });
   return clamp(mean(values), 0, 1);
-}
-
-export function directionAngleFromVertical(vector: Vec3): number {
-  const vertical = { x: 0, y: -1, z: 0 };
-  return angleBetween(vector, vertical);
 }
 
 export function directionAngleFromScreenVertical(vector: Vec2): number {

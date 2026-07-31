@@ -88,7 +88,7 @@ export function drawPoseOverlay(
     drawBodyLayer(context, analysis, points, width, height);
   }
   if (layers.muscles) {
-    drawMuscleLayer(context, analysis, points, width, height);
+    drawMuscleLayer(context, points, width, height);
   }
   if (layers.skeleton) {
     drawSkeletonLayer(context, analysis, points, width, height);
@@ -99,7 +99,6 @@ export function drawPoseOverlay(
   }
   context.restore();
 
-  drawBadge(context, analysis, width, height);
 }
 
 function drawFramingGuide(context: CanvasRenderingContext2D, width: number, height: number): void {
@@ -177,7 +176,7 @@ function drawBodyLayer(
   context.restore();
 }
 
-function drawHeadShell(context: CanvasRenderingContext2D, points: ScreenPoint[], width: number, height: number): void {
+function drawHeadShell(context: CanvasRenderingContext2D, points: ScreenPoint[], width: number, _height: number): void {
   const nose = points[POSE.nose];
   const leftEar = points[POSE.leftEar];
   const rightEar = points[POSE.rightEar];
@@ -266,7 +265,6 @@ function drawJointCaps(context: CanvasRenderingContext2D, analysis: AnalysisFram
 
 function drawMuscleLayer(
   context: CanvasRenderingContext2D,
-  analysis: AnalysisFrame,
   points: ScreenPoint[],
   width: number,
   height: number
@@ -275,11 +273,13 @@ function drawMuscleLayer(
   context.globalCompositeOperation = "source-over";
   context.shadowBlur = Math.max(8, width * 0.011);
 
-  const posterior = clamp(analysis.metrics.hingeRatio / 1.85 + analysis.metrics.depthTravel * 0.25 + analysis.metrics.repVelocity / 190, 0.18, 1);
-  const knee = clamp(analysis.metrics.kneeFlexionDelta / 54 + (1 - Math.min(analysis.metrics.hingeRatio / 1.7, 1)) * 0.32, 0.14, 0.92);
-  const spine = clamp((1 - analysis.metrics.spineStack) * 0.7 + analysis.metrics.hipFlexionDelta / 110 + 0.18, 0.18, 1);
-  const shoulder = clamp(analysis.metrics.shoulderLift / 0.15 + analysis.metrics.wristHeight * 0.22 + 0.14, 0.14, 1);
-  const grip = clamp(analysis.metrics.wristHeight * 0.5 + analysis.metrics.repVelocity / 220 + 0.18, 0.16, 0.95);
+  // These values are fixed visual weights. They illustrate landmark regions and
+  // must not be interpreted as measured muscle activation or tissue load.
+  const posterior = 0.54;
+  const knee = 0.42;
+  const spine = 0.46;
+  const shoulder = 0.38;
+  const grip = 0.34;
 
   drawTorsoMuscles(context, points, width, spine, shoulder);
   drawGlute(context, points[POSE.leftHip], points[POSE.leftKnee], width, -1, posterior);
@@ -462,29 +462,6 @@ function drawWristTrail(
   context.arc(wristX, wristY, radius, 0, Math.PI * 2);
   context.fill();
 
-  if (analysis.wristTrail.length > 2) {
-    context.strokeStyle = "rgba(132, 220, 198, 0.55)";
-    context.lineWidth = Math.max(2, width * 0.003);
-    context.beginPath();
-    context.moveTo(wristX, wristY);
-    context.lineTo(wristX, wristY);
-    context.stroke();
-  }
-  context.restore();
-}
-
-function drawBadge(context: CanvasRenderingContext2D, analysis: AnalysisFrame, width: number, height: number): void {
-  context.save();
-  const scoreColor = analysis.score >= 82 ? "#9be7c0" : analysis.score >= 66 ? "#ffd38a" : "#ff9f9f";
-  context.fillStyle = "rgba(8, 13, 18, 0.72)";
-  context.roundRect(width - 148, 16, 132, 58, 14);
-  context.fill();
-  context.fillStyle = scoreColor;
-  context.font = "700 26px Inter, system-ui, sans-serif";
-  context.fillText(`${analysis.score}`, width - 128, 52);
-  context.fillStyle = "rgba(238, 244, 247, 0.76)";
-  context.font = "600 12px Inter, system-ui, sans-serif";
-  context.fillText(analysis.phase.toUpperCase(), width - 82, 51);
   context.restore();
 }
 
@@ -508,8 +485,4 @@ function distance(a: ScreenPoint | undefined, b: ScreenPoint | undefined): numbe
     return 0;
   }
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }

@@ -471,22 +471,62 @@ export function PoseScene({ analysis, layers }: PoseSceneProps) {
     resizeObserver.observe(host);
 
     let isDisposed = false;
+    let isVisible = true;
+    let animationFrameId = 0;
+
+    const requestRender = () => {
+      if (!isDisposed && isVisible && !document.hidden && animationFrameId === 0) {
+        animationFrameId = requestAnimationFrame(render);
+      }
+    };
+
     const render = () => {
-      if (isDisposed) {
+      animationFrameId = 0;
+      if (isDisposed || !isVisible || document.hidden) {
         return;
       }
 
       updateScene(analysisRef.current, layersRef.current, refs);
       controls.update();
       renderer.render(scene, camera);
-      requestAnimationFrame(render);
+      requestRender();
     };
-    render();
+
+    const visibilityObserver =
+      "IntersectionObserver" in window
+        ? new IntersectionObserver(([entry]) => {
+            isVisible = entry?.isIntersecting ?? false;
+            if (isVisible) {
+              requestRender();
+            } else if (animationFrameId !== 0) {
+              cancelAnimationFrame(animationFrameId);
+              animationFrameId = 0;
+            }
+          })
+        : null;
+    visibilityObserver?.observe(host);
+
+    const handleVisibilityChange = () => {
+      if (document.hidden && animationFrameId !== 0) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = 0;
+      } else {
+        requestRender();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    requestRender();
 
     return () => {
       isDisposed = true;
+      if (animationFrameId !== 0) {
+        cancelAnimationFrame(animationFrameId);
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      visibilityObserver?.disconnect();
       resizeObserver.disconnect();
       controls.dispose();
+      renderer.forceContextLoss();
       renderer.dispose();
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());
@@ -515,11 +555,21 @@ function updateScene(analysis: AnalysisFrame | null, layers: AnatomyLayerState, 
 
   const anchors = createAnchors(analysis);
 
-  updateSkeleton(analysis, anchors, refs);
-  updateBody(analysis, anchors, refs);
-  updateMuscles(analysis, anchors, refs);
-  updateGaussianFields(analysis, refs);
-  updateTrail(analysis, refs);
+  if (layers.skeleton) {
+    updateSkeleton(analysis, anchors, refs);
+  }
+  if (layers.body) {
+    updateBody(analysis, anchors, refs);
+  }
+  if (layers.muscles) {
+    updateMuscles(analysis, anchors, refs);
+  }
+  if (layers.gaussian) {
+    updateGaussianFields(analysis, refs);
+    updateTrail(analysis, refs);
+  } else {
+    refs.trail.visible = false;
+  }
 }
 
 function updateSkeleton(analysis: AnalysisFrame, anchors: Map<Anchor, THREE.Vector3>, refs: SceneRefs): void {
@@ -581,10 +631,9 @@ function updateMuscles(analysis: AnalysisFrame, anchors: Map<Anchor, THREE.Vecto
     end.add(offset);
     updateEllipsoidSegment(mesh, start, end, spec.radiusX, spec.radiusZ, true);
 
-    const activation = muscleActivation(spec.metric, analysis);
     const material = mesh.material as THREE.MeshStandardMaterial;
-    material.opacity = 0.28 + activation * 0.44;
-    material.emissiveIntensity = 0.18 + activation * 0.36;
+    material.opacity = 0.44;
+    material.emissiveIntensity = 0.16;
   });
 }
 
@@ -615,7 +664,7 @@ function updateTrail(analysis: AnalysisFrame, refs: SceneRefs): void {
     refs.trailPositions[trailOffset + 2] = threePoint.z;
   });
   (refs.trail.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-  refs.trail.geometry.setDrawRange(0, analysis.wristTrail.length);
+  refs.trail.geometry.setDrawRange(0, Math.min(analysis.wristTrail.length, 90));
 }
 
 function createAnchors(analysis: AnalysisFrame): Map<Anchor, THREE.Vector3> {
@@ -729,24 +778,6 @@ function updateEllipsoidSegment(
   mesh.position.copy(midpoint(start, end));
   mesh.quaternion.setFromUnitVectors(Y_AXIS, direction);
   mesh.scale.set(radiusX, length * 0.52, radiusZ);
-}
-
-function muscleActivation(metric: MuscleMetric, analysis: AnalysisFrame): number {
-  const metrics = analysis.metrics;
-
-  if (metric === "posterior") {
-    return THREE.MathUtils.clamp(metrics.hingeRatio / 1.85 + metrics.depthTravel * 0.25 + metrics.repVelocity / 190, 0.18, 1);
-  }
-  if (metric === "knee") {
-    return THREE.MathUtils.clamp(metrics.kneeFlexionDelta / 54 + (1 - Math.min(metrics.hingeRatio / 1.7, 1)) * 0.32, 0.14, 0.92);
-  }
-  if (metric === "spine") {
-    return THREE.MathUtils.clamp((1 - metrics.spineStack) * 0.7 + metrics.hipFlexionDelta / 110 + 0.18, 0.18, 1);
-  }
-  if (metric === "shoulder") {
-    return THREE.MathUtils.clamp(metrics.shoulderLift / 0.15 + metrics.wristHeight * 0.22 + 0.14, 0.14, 1);
-  }
-  return THREE.MathUtils.clamp(metrics.wristHeight * 0.5 + metrics.repVelocity / 220 + 0.18, 0.16, 0.95);
 }
 
 function hideMeshes(meshes: THREE.Mesh[]): void {
