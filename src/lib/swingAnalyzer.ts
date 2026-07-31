@@ -37,6 +37,38 @@ type MetricSample = {
   wristDepth: number;
 };
 
+type BasicMetrics = {
+  hipAngle: number;
+  kneeAngle: number;
+  torsoLean: number;
+  shoulderWidth: number;
+  torsoLength: number;
+  visibility: number;
+};
+
+type RepProgress = "idle" | "backswing" | "drive";
+
+// Fail-closed capture-quality gates; these are not performance or clinical thresholds.
+const MIN_CALIBRATION_SAMPLES = 30;
+const MIN_CALIBRATION_DURATION_MS = 1500;
+const MIN_VALID_CALIBRATION_RATIO = 0.8;
+const MIN_CALIBRATION_VISIBILITY = 0.7;
+const MIN_UPRIGHT_HIP_ANGLE = 150;
+const MIN_UPRIGHT_KNEE_ANGLE = 155;
+const MAX_UPRIGHT_TORSO_LEAN = 20;
+const MAX_HIP_CALIBRATION_JITTER = 4;
+const MAX_KNEE_CALIBRATION_JITTER = 4;
+const MAX_TORSO_CALIBRATION_JITTER = 3.5;
+const MAX_TRACKING_GAP_MS = 350;
+const MAX_REP_DURATION_MS = 3500;
+const MIN_TRACKING_VISIBILITY = 0.58;
+const MIN_WRIST_VISIBILITY = 0.55;
+const MIN_CAMERA_QUALITY = 0.45;
+const MIN_RECENT_MOTION_DEGREES = 4;
+const MIN_REP_INTERVAL_MS = 650;
+const RECENT_MOTION_WINDOW_MS = 750;
+const DEPTH_WINDOW_MS = 1200;
+
 const DEFAULT_PROFILE: CalibrationProfile = {
   createdAt: 0,
   sampleCount: 0,
@@ -60,25 +92,72 @@ const calibrationIndices = [
   POSE.rightAnkle
 ];
 
-export function createCalibrationProfile(samples: PoseFrame[]): CalibrationProfile | null {
-  const measured = samples
-    .map((sample) => measureBasic(sample.landmarks, sample.worldLandmarks))
-    .filter((metrics) => metrics.visibility > 0.55);
+const trackingIndices = [
+  ...calibrationIndices,
+  POSE.leftEar,
+  POSE.rightEar,
+  POSE.leftWrist,
+  POSE.rightWrist
+];
 
-  if (measured.length < 12) {
+export function createCalibrationProfile(samples: PoseFrame[]): CalibrationProfile | null {
+  if (samples.length < MIN_CALIBRATION_SAMPLES) {
+    return null;
+  }
+
+  const measured = samples
+    .filter((sample) => Number.isFinite(sample.timestamp) && hasBasicLandmarks(sample.landmarks, sample.worldLandmarks))
+    .map((sample) => ({
+      timestamp: sample.timestamp,
+      metrics: measureBasic(sample.landmarks, sample.worldLandmarks)
+    }))
+    .filter(
+      ({ metrics }) =>
+        isFiniteBasicMetrics(metrics) &&
+        metrics.visibility >= MIN_CALIBRATION_VISIBILITY &&
+        metrics.hipAngle >= MIN_UPRIGHT_HIP_ANGLE &&
+        metrics.kneeAngle >= MIN_UPRIGHT_KNEE_ANGLE &&
+        metrics.torsoLean <= MAX_UPRIGHT_TORSO_LEAN
+    );
+
+  if (
+    measured.length < MIN_CALIBRATION_SAMPLES ||
+    measured.length / samples.length < MIN_VALID_CALIBRATION_RATIO
+  ) {
+    return null;
+  }
+
+  const timestamps = measured.map(({ timestamp }) => timestamp);
+  if (timestamps.some((timestamp, index) => index > 0 && timestamp <= timestamps[index - 1])) {
+    return null;
+  }
+  const duration = Math.max(...timestamps) - Math.min(...timestamps);
+  if (duration < MIN_CALIBRATION_DURATION_MS) {
+    return null;
+  }
+
+  const hipAngles = measured.map(({ metrics }) => metrics.hipAngle);
+  const kneeAngles = measured.map(({ metrics }) => metrics.kneeAngle);
+  const torsoLeans = measured.map(({ metrics }) => metrics.torsoLean);
+  const hipJitter = standardDeviation(hipAngles);
+  if (
+    hipJitter > MAX_HIP_CALIBRATION_JITTER ||
+    standardDeviation(kneeAngles) > MAX_KNEE_CALIBRATION_JITTER ||
+    standardDeviation(torsoLeans) > MAX_TORSO_CALIBRATION_JITTER
+  ) {
     return null;
   }
 
   return {
     createdAt: Date.now(),
     sampleCount: measured.length,
-    uprightHipAngle: median(measured.map((metric) => metric.hipAngle)),
-    uprightKneeAngle: median(measured.map((metric) => metric.kneeAngle)),
-    uprightTorsoLean: median(measured.map((metric) => metric.torsoLean)),
-    shoulderWidth: median(measured.map((metric) => metric.shoulderWidth)),
-    torsoLength: median(measured.map((metric) => metric.torsoLength)),
-    confidence: clamp(mean(measured.map((metric) => metric.visibility)), 0, 1),
-    jitter: standardDeviation(measured.map((metric) => metric.hipAngle))
+    uprightHipAngle: median(hipAngles),
+    uprightKneeAngle: median(kneeAngles),
+    uprightTorsoLean: median(torsoLeans),
+    shoulderWidth: median(measured.map(({ metrics }) => metrics.shoulderWidth)),
+    torsoLength: median(measured.map(({ metrics }) => metrics.torsoLength)),
+    confidence: clamp(mean(measured.map(({ metrics }) => metrics.visibility)), 0, 1),
+    jitter: hipJitter
   };
 }
 
@@ -87,22 +166,37 @@ export class SwingAnalyzer {
   private repCount = 0;
   private history: MetricSample[] = [];
   private wristTrail = [] as Array<{ x: number; y: number; z: number }>;
-  private loadedBackswing = false;
-  private lastRepAt = 0;
+  private repProgress: RepProgress = "idle";
+  private repStartedAt = 0;
+  private lastFrameAt: number | null = null;
+  private lastRepAt = Number.NEGATIVE_INFINITY;
 
   reset(): void {
     this.phase = "waiting";
     this.repCount = 0;
-    this.history = [];
-    this.wristTrail = [];
-    this.loadedBackswing = false;
-    this.lastRepAt = 0;
+    this.clearTrackingState();
+    this.lastFrameAt = null;
+    this.lastRepAt = Number.NEGATIVE_INFINITY;
   }
 
   update(frame: PoseFrame, settings: CoachSettings, calibration?: CalibrationProfile | null): AnalysisFrame {
     const profile = calibration ?? DEFAULT_PROFILE;
-    const metrics = measureSwing(frame.landmarks, frame.worldLandmarks, profile, settings, this.history);
     const now = frame.timestamp;
+    const timelineBroken =
+      this.lastFrameAt !== null &&
+      (!Number.isFinite(now) || now <= this.lastFrameAt || now - this.lastFrameAt > MAX_TRACKING_GAP_MS);
+
+    if (timelineBroken) {
+      this.clearTrackingState();
+    }
+    this.lastFrameAt = Number.isFinite(now) ? now : null;
+
+    if (!Number.isFinite(now) || !hasTrackingLandmarks(frame.landmarks, frame.worldLandmarks)) {
+      this.clearTrackingState();
+      return createNoAssessmentFrame(frame, this.repCount);
+    }
+
+    const metrics = measureSwing(frame.landmarks, frame.worldLandmarks, profile, settings, this.history, now);
     const sample = {
       timestamp: now,
       hipAngle: metrics.hipAngle,
@@ -112,43 +206,45 @@ export class SwingAnalyzer {
       wristDepth: metrics.wristDepth
     };
 
-    this.history.push(sample);
-    this.history = this.history.filter((item) => now - item.timestamp < 4500);
-
-    const previous = this.history.at(-2);
+    const previous = this.history.at(-1);
     const dt = previous ? Math.max(16, now - previous.timestamp) / 1000 : 1 / 30;
     const hipVelocity = previous ? (sample.hipFlexionDelta - previous.hipFlexionDelta) / dt : 0;
     metrics.repVelocity = Math.abs(hipVelocity);
+
+    const wristVisibility = visibilityOf(frame.landmarks, [POSE.leftWrist, POSE.rightWrist]);
+    const trackingReady =
+      metrics.visibility >= MIN_TRACKING_VISIBILITY &&
+      wristVisibility >= MIN_WRIST_VISIBILITY &&
+      metrics.cameraQuality >= MIN_CAMERA_QUALITY;
+    if (!trackingReady) {
+      this.clearTrackingState();
+      return createNoAssessmentFrame(frame, this.repCount, metrics);
+    }
+
+    const hasMotion = hasRecentMotion(this.history, sample, hipVelocity);
+    this.history.push(sample);
+    this.history = this.history.filter((item) => now - item.timestamp < 4500);
 
     this.wristTrail.push(getWristWorld(frame.worldLandmarks));
     this.wristTrail = this.wristTrail.slice(-90);
 
     const thresholds = getThresholds(settings);
-    if (metrics.hipFlexionDelta > thresholds.bottom) {
-      this.loadedBackswing = true;
-    }
-
-    if (
-      this.loadedBackswing &&
-      metrics.hipFlexionDelta < thresholds.top &&
-      metrics.wristHeight > 0.18 &&
-      now - this.lastRepAt > 650
-    ) {
-      this.repCount += 1;
-      this.loadedBackswing = false;
-      this.lastRepAt = now;
-    }
-
-    this.phase = classifyPhase(metrics, hipVelocity, thresholds);
-    const feedback = buildFeedback(metrics, settings, this.phase, thresholds, this.repCount);
-    const jointRisks = buildJointRisks(frame.landmarks, metrics, feedback);
-    const score = scoreFrame(metrics, feedback);
+    this.phase = classifyPhase(metrics, hipVelocity, thresholds, hasMotion);
+    const completedRep = this.advanceRepState(this.phase, metrics, now, thresholds);
+    const isRecentCompletedRep = Number.isFinite(this.lastRepAt) && now - this.lastRepAt <= 450;
+    const shouldAssess =
+      this.phase !== "waiting" &&
+      (this.repProgress !== "idle" || completedRep || isRecentCompletedRep);
+    const feedback = shouldAssess ? buildFeedback(metrics, settings, this.phase, thresholds) : [];
+    const jointRisks = shouldAssess ? buildJointRisks(frame.landmarks, metrics, feedback) : [];
+    const score = shouldAssess ? scoreFrame(metrics, feedback) : 0;
 
     return {
+      assessmentStatus: shouldAssess ? "assessed" : "unassessed",
       phase: this.phase,
       repCount: this.repCount,
       score,
-      confidence: clamp(metrics.visibility * 0.5 + metrics.cameraQuality * 0.35 + metrics.smoothness * 0.15, 0, 1),
+      confidence: clamp(metrics.visibility * 0.58 + metrics.cameraQuality * 0.42, 0, 1),
       metrics,
       feedback,
       jointRisks,
@@ -157,13 +253,182 @@ export class SwingAnalyzer {
       wristTrail: [...this.wristTrail]
     };
   }
+
+  private clearTrackingState(): void {
+    this.phase = "waiting";
+    this.history = [];
+    this.wristTrail = [];
+    this.repProgress = "idle";
+    this.repStartedAt = 0;
+  }
+
+  private advanceRepState(
+    phase: SwingPhase,
+    metrics: SwingMetrics,
+    now: number,
+    thresholds: { bottom: number; top: number }
+  ): boolean {
+    if (this.repProgress !== "idle" && now - this.repStartedAt > MAX_REP_DURATION_MS) {
+      this.repProgress = "idle";
+      this.repStartedAt = 0;
+    }
+
+    if (phase === "backswing") {
+      if (this.repProgress === "idle" || this.repProgress === "drive") {
+        this.repProgress = "backswing";
+        this.repStartedAt = now;
+      }
+      return false;
+    }
+
+    if (phase === "drive" && this.repProgress === "backswing") {
+      this.repProgress = "drive";
+      return false;
+    }
+
+    if (phase === "float" || phase === "lockout") {
+      const completed =
+        this.repProgress === "drive" &&
+        metrics.hipFlexionDelta <= thresholds.top &&
+        metrics.wristHeight > 0.18 &&
+        now - this.lastRepAt > MIN_REP_INTERVAL_MS;
+
+      this.repProgress = "idle";
+      this.repStartedAt = 0;
+      if (completed) {
+        this.repCount += 1;
+        this.lastRepAt = now;
+      }
+      return completed;
+    }
+
+    return false;
+  }
+}
+
+function hasBasicLandmarks(landmarks: NormalizedLandmark[], worldLandmarks: Landmark[]): boolean {
+  return calibrationIndices.every(
+    (index) => isFiniteImageLandmark(landmarks[index]) && isFiniteWorldLandmark(worldLandmarks[index])
+  );
+}
+
+function hasTrackingLandmarks(landmarks: NormalizedLandmark[], worldLandmarks: Landmark[]): boolean {
+  return trackingIndices.every(
+    (index) => isFiniteImageLandmark(landmarks[index]) && isFiniteWorldLandmark(worldLandmarks[index])
+  );
+}
+
+function isFiniteImageLandmark(landmark: NormalizedLandmark | undefined): landmark is NormalizedLandmark {
+  return Boolean(landmark && Number.isFinite(landmark.x) && Number.isFinite(landmark.y));
+}
+
+function isFiniteWorldLandmark(landmark: Landmark | undefined): landmark is Landmark {
+  return Boolean(
+    landmark && Number.isFinite(landmark.x) && Number.isFinite(landmark.y) && Number.isFinite(landmark.z)
+  );
+}
+
+function isFiniteBasicMetrics(metrics: BasicMetrics): boolean {
+  return Object.values(metrics).every(Number.isFinite) && metrics.shoulderWidth > 0 && metrics.torsoLength > 0;
+}
+
+function createNoAssessmentFrame(
+  frame: PoseFrame,
+  repCount: number,
+  measuredMetrics?: SwingMetrics
+): AnalysisFrame {
+  const metrics: SwingMetrics = measuredMetrics ?? {
+    hipAngle: 0,
+    kneeAngle: 0,
+    hipFlexionDelta: 0,
+    kneeFlexionDelta: 0,
+    hingeRatio: 0,
+    torsoLean: 0,
+    shoulderLift: 0,
+    wristHeight: 0,
+    wristDepth: 0,
+    spineStack: 0,
+    visibility: 0,
+    cameraQuality: 0,
+    smoothness: 0,
+    depthTravel: 0,
+    repVelocity: 0
+  };
+
+  return {
+    assessmentStatus: "unassessed",
+    phase: "waiting",
+    repCount,
+    score: 0,
+    confidence: clamp(metrics.visibility * 0.58 + metrics.cameraQuality * 0.42, 0, 1),
+    metrics,
+    feedback: [],
+    jointRisks: [],
+    worldLandmarks: frame.worldLandmarks,
+    landmarks: frame.landmarks,
+    wristTrail: []
+  };
+}
+
+function hasRecentMotion(history: MetricSample[], current: MetricSample, hipVelocity: number): boolean {
+  if (Math.abs(hipVelocity) >= 8) {
+    return true;
+  }
+
+  const recentDeltas = [
+    ...history
+      .filter((sample) => current.timestamp - sample.timestamp <= RECENT_MOTION_WINDOW_MS)
+      .map((sample) => sample.hipFlexionDelta),
+    current.hipFlexionDelta
+  ];
+  if (recentDeltas.length < 2) {
+    return false;
+  }
+
+  return Math.max(...recentDeltas) - Math.min(...recentDeltas) >= MIN_RECENT_MOTION_DEGREES;
+}
+
+function calculateMotionSmoothness(
+  history: MetricSample[],
+  current: { timestamp: number; hipAngle: number }
+): number {
+  const recent = [
+    ...history
+      .filter((sample) => current.timestamp - sample.timestamp <= RECENT_MOTION_WINDOW_MS)
+      .map(({ timestamp, hipAngle }) => ({ timestamp, hipAngle })),
+    current
+  ];
+  if (recent.length < 3) {
+    return 1;
+  }
+
+  const predictionErrors: number[] = [];
+  for (let index = 2; index < recent.length; index += 1) {
+    const before = recent[index - 2];
+    const previous = recent[index - 1];
+    const next = recent[index];
+    const previousDt = previous.timestamp - before.timestamp;
+    const nextDt = next.timestamp - previous.timestamp;
+    if (previousDt <= 0 || nextDt <= 0 || previousDt > MAX_TRACKING_GAP_MS || nextDt > MAX_TRACKING_GAP_MS) {
+      continue;
+    }
+
+    const previousVelocity = (previous.hipAngle - before.hipAngle) / previousDt;
+    const predictedAngle = previous.hipAngle + previousVelocity * nextDt;
+    predictionErrors.push(Math.abs(next.hipAngle - predictedAngle));
+  }
+
+  if (predictionErrors.length === 0) {
+    return 1;
+  }
+  return clamp(1 - median(predictionErrors) / 10, 0.25, 1);
 }
 
 function getThresholds(settings: CoachSettings): { bottom: number; top: number; hingeRatio: number } {
   const experienceAdjustment = settings.experience === "new" ? -2 : settings.experience === "advanced" ? 3 : 0;
-  const goalBottom = settings.goal === "power" ? 42 : settings.goal === "rehab" ? 30 : 36;
-  const top = settings.goal === "rehab" ? 17 : settings.experience === "advanced" ? 10 : 14;
-  const hingeRatio = settings.goal === "rehab" ? 1.25 : settings.experience === "advanced" ? 1.65 : 1.45;
+  const goalBottom = settings.goal === "power" ? 42 : 36;
+  const top = settings.experience === "advanced" ? 10 : 14;
+  const hingeRatio = settings.experience === "advanced" ? 1.65 : 1.45;
   return {
     bottom: goalBottom + experienceAdjustment,
     top,
@@ -174,9 +439,10 @@ function getThresholds(settings: CoachSettings): { bottom: number; top: number; 
 function classifyPhase(
   metrics: SwingMetrics,
   hipVelocity: number,
-  thresholds: { bottom: number; top: number }
+  thresholds: { bottom: number; top: number },
+  hasMotion: boolean
 ): SwingPhase {
-  if (metrics.visibility < 0.42) {
+  if (!hasMotion) {
     return "waiting";
   }
 
@@ -195,7 +461,7 @@ function classifyPhase(
   return "waiting";
 }
 
-function measureBasic(landmarks: NormalizedLandmark[], worldLandmarks: Landmark[]) {
+function measureBasic(landmarks: NormalizedLandmark[], worldLandmarks: Landmark[]): BasicMetrics {
   const leftHipAngle = jointAngle(
     asVec3(worldLandmarks[POSE.leftShoulder]),
     asVec3(worldLandmarks[POSE.leftHip]),
@@ -237,7 +503,8 @@ function measureSwing(
   worldLandmarks: Landmark[],
   profile: CalibrationProfile,
   settings: CoachSettings,
-  history: MetricSample[]
+  history: MetricSample[],
+  now: number
 ): SwingMetrics {
   const basic = measureBasic(landmarks, worldLandmarks);
   const hipMid2 = midpoint2(asVec2(landmarks[POSE.leftHip]), asVec2(landmarks[POSE.rightHip]));
@@ -264,10 +531,12 @@ function measureSwing(
   const neckDeviation = angleBetween(torsoVector, headVector);
   const topOverlean = Math.max(0, basic.torsoLean - Math.max(10, profile.uprightTorsoLean + 7));
   const spineStack = clamp(1 - (neckDeviation + topOverlean) / 50, 0, 1);
-  const recentDepths = [...history.slice(-45).map((item) => item.wristDepth), wristWorld.z];
+  const recentDepths = [
+    ...history.filter((item) => now - item.timestamp <= DEPTH_WINDOW_MS).map((item) => item.wristDepth),
+    wristWorld.z
+  ];
   const depthTravel = recentDepths.length > 2 ? Math.max(...recentDepths) - Math.min(...recentDepths) : 0;
-  const recentAngles = [...history.slice(-25).map((item) => item.hipAngle), basic.hipAngle];
-  const smoothness = clamp(1 - standardDeviation(recentAngles) / 32, 0.2, 1);
+  const smoothness = calculateMotionSmoothness(history, { timestamp: now, hipAngle: basic.hipAngle });
 
   return {
     hipAngle: basic.hipAngle,
@@ -280,7 +549,7 @@ function measureSwing(
     wristHeight,
     wristDepth: wristWorld.z,
     spineStack,
-    visibility: basic.visibility,
+    visibility: visibilityOf(landmarks, trackingIndices),
     cameraQuality,
     smoothness,
     depthTravel: normalizeDepthTravel(depthTravel, profile, settings),
@@ -290,7 +559,8 @@ function measureSwing(
 
 function normalizeDepthTravel(depthTravel: number, profile: CalibrationProfile, settings: CoachSettings): number {
   const estimatedTorso = Math.max(0.35, profile.torsoLength);
-  const heightScale = clamp(settings.heightCm / 175, 0.82, 1.18);
+  const heightCm = Number.isFinite(settings.heightCm) ? settings.heightCm : 175;
+  const heightScale = clamp(heightCm / 175, 0.82, 1.18);
   return clamp(depthTravel / (estimatedTorso * 0.55 * heightScale), 0, 1.4);
 }
 
@@ -302,28 +572,16 @@ function buildFeedback(
   metrics: SwingMetrics,
   settings: CoachSettings,
   phase: SwingPhase,
-  thresholds: { bottom: number; top: number; hingeRatio: number },
-  repCount: number
+  thresholds: { hingeRatio: number }
 ): FeedbackSignal[] {
   const feedback: FeedbackSignal[] = [];
   const add = (signal: FeedbackSignal) => feedback.push(signal);
-
-  if (metrics.visibility < 0.52) {
-    add({
-      id: "visibility",
-      label: "Keep full body in frame",
-      detail: "Feet, hips, shoulders, and hands need to stay visible for reliable coaching.",
-      severity: "fix",
-      score: metrics.visibility,
-      joint: "camera"
-    });
-  }
 
   if (metrics.cameraQuality < 0.62) {
     add({
       id: "camera",
       label: "Use a cleaner side view",
-      detail: "A side-on camera angle makes hip depth, knee travel, and bell path much more measurable.",
+      detail: "A side-on camera angle makes shoulder, hip, knee, and wrist landmarks more reliable.",
       severity: metrics.cameraQuality < 0.42 ? "fix" : "watch",
       score: metrics.cameraQuality,
       joint: "camera"
@@ -338,28 +596,6 @@ function buildFeedback(
       severity: metrics.hingeRatio < 1.05 ? "fix" : "watch",
       score: clamp(metrics.hingeRatio / thresholds.hingeRatio, 0, 1),
       joint: "knees"
-    });
-  }
-
-  if (phase === "backswing" && metrics.hipFlexionDelta < thresholds.bottom + 8 && repCount > 0) {
-    add({
-      id: "hinge-depth",
-      label: "Load the backswing deeper",
-      detail: "The bell should pull you into a real hip hinge before the next drive.",
-      severity: "watch",
-      score: clamp(metrics.hipFlexionDelta / (thresholds.bottom + 8), 0, 1),
-      joint: "hips"
-    });
-  }
-
-  if ((phase === "float" || phase === "lockout") && metrics.hipFlexionDelta > thresholds.top + 6) {
-    add({
-      id: "finish-hips",
-      label: "Finish tall through the hips",
-      detail: "Stand into a vertical plank at the top instead of staying folded.",
-      severity: "fix",
-      score: clamp(1 - metrics.hipFlexionDelta / 40, 0, 1),
-      joint: "hips"
     });
   }
 
@@ -385,26 +621,24 @@ function buildFeedback(
     });
   }
 
-  if (repCount >= 2 && metrics.depthTravel < 0.18) {
-    add({
-      id: "depth-path",
-      label: "Create a real backswing",
-      detail: "The hands are not travelling far enough through depth; keep the lats connected and hike back.",
-      severity: "watch",
-      score: clamp(metrics.depthTravel / 0.35, 0, 1),
-      joint: "hips"
-    });
-  }
-
   if (feedback.length === 0) {
-    add({
-      id: "clean",
-      label: "Pattern looks clean",
-      detail: "Hip timing, lockout, bell height, and camera confidence are inside the current tolerance.",
-      severity: "good",
-      score: 1,
-      joint: "hips"
-    });
+    if (phase === "backswing" || phase === "drive") {
+      add({
+        id: "rep-progress",
+        label: "Rep in progress",
+        detail: "Complete the swing before the coach reports a finished-rep assessment.",
+        severity: "good",
+        score: 1
+      });
+    } else {
+      add({
+        id: "rep-complete",
+        label: "Rep completed",
+        detail: "No additional high-confidence adjustment is available for this finish.",
+        severity: "good",
+        score: 1
+      });
+    }
   }
 
   return feedback.slice(0, 4);
@@ -419,11 +653,10 @@ function scoreFrame(metrics: SwingMetrics, feedback: FeedbackSignal[]): number {
   }, 0);
   const confidencePenalty = (1 - metrics.visibility) * 20 + (1 - metrics.cameraQuality) * 12;
   const movementScore =
-    metrics.spineStack * 20 +
-    clamp(metrics.hingeRatio / 1.8, 0, 1) * 20 +
-    clamp(1 - metrics.shoulderLift / 0.14, 0, 1) * 16 +
-    metrics.smoothness * 14 +
-    clamp(metrics.depthTravel, 0, 1) * 10 +
+    metrics.spineStack * 25 +
+    clamp(metrics.hingeRatio / 1.8, 0, 1) * 25 +
+    clamp(1 - metrics.shoulderLift / 0.14, 0, 1) * 20 +
+    metrics.smoothness * 10 +
     20;
   return Math.round(clamp(movementScore - penalty - confidencePenalty, 0, 100));
 }
@@ -433,21 +666,34 @@ function buildJointRisks(
   metrics: SwingMetrics,
   feedback: FeedbackSignal[]
 ): JointRisk[] {
-  const risks: JointRisk[] = [];
-  const addRisk = (index: number, intensity: number, color: string, radius = 0.07) => {
-    risks.push({
+  const risks = new Map<number, { risk: JointRisk; priority: number }>();
+  const addRisk = (index: number, intensity: number, color: string, radius = 0.07, priority = 0) => {
+    const landmark = landmarks[index];
+    if (!landmark || !Number.isFinite(landmark.x) || !Number.isFinite(landmark.y)) {
+      return;
+    }
+
+    const risk = {
       index,
-      center: asVec2(landmarks[index]),
-      depth: landmarks[index]?.z ?? 0,
+      center: asVec2(landmark),
+      depth: Number.isFinite(landmark.z) ? landmark.z : 0,
       radius,
       intensity: clamp(intensity, 0, 1),
       color
-    });
+    };
+    const current = risks.get(index);
+    if (
+      !current ||
+      priority > current.priority ||
+      (priority === current.priority && risk.intensity > current.risk.intensity)
+    ) {
+      risks.set(index, { risk, priority });
+    }
   };
 
   const uncertainty = clamp(1 - metrics.visibility, 0, 1);
   for (const index of [POSE.leftHip, POSE.rightHip, POSE.leftKnee, POSE.rightKnee, POSE.leftShoulder, POSE.rightShoulder]) {
-    addRisk(index, 0.18 + uncertainty * 0.45, "rgba(66, 153, 225, 0.45)", 0.055 + uncertainty * 0.045);
+    addRisk(index, 0.18 + uncertainty * 0.45, "rgba(66, 153, 225, 0.45)", 0.055 + uncertainty * 0.045, 0);
   }
 
   for (const signal of feedback) {
@@ -455,28 +701,29 @@ function buildJointRisks(
       continue;
     }
     const intensity = signal.severity === "fix" ? 0.86 : 0.52;
+    const priority = signal.severity === "fix" ? 2 : 1;
     const color = signal.severity === "fix" ? "rgba(255, 92, 92, 0.72)" : "rgba(255, 185, 90, 0.62)";
     if (signal.joint === "knees") {
-      addRisk(POSE.leftKnee, intensity, color, 0.105);
-      addRisk(POSE.rightKnee, intensity, color, 0.105);
+      addRisk(POSE.leftKnee, intensity, color, 0.105, priority);
+      addRisk(POSE.rightKnee, intensity, color, 0.105, priority);
     }
     if (signal.joint === "hips") {
-      addRisk(POSE.leftHip, intensity, color, 0.12);
-      addRisk(POSE.rightHip, intensity, color, 0.12);
+      addRisk(POSE.leftHip, intensity, color, 0.12, priority);
+      addRisk(POSE.rightHip, intensity, color, 0.12, priority);
     }
     if (signal.joint === "spine") {
-      addRisk(POSE.leftShoulder, intensity, color, 0.115);
-      addRisk(POSE.rightShoulder, intensity, color, 0.115);
-      addRisk(POSE.leftHip, intensity * 0.7, color, 0.095);
-      addRisk(POSE.rightHip, intensity * 0.7, color, 0.095);
+      addRisk(POSE.leftShoulder, intensity, color, 0.115, priority);
+      addRisk(POSE.rightShoulder, intensity, color, 0.115, priority);
+      addRisk(POSE.leftHip, intensity * 0.7, color, 0.095, priority);
+      addRisk(POSE.rightHip, intensity * 0.7, color, 0.095, priority);
     }
     if (signal.joint === "shoulders") {
-      addRisk(POSE.leftShoulder, intensity, color, 0.105);
-      addRisk(POSE.rightShoulder, intensity, color, 0.105);
-      addRisk(POSE.leftWrist, intensity * 0.7, color, 0.095);
-      addRisk(POSE.rightWrist, intensity * 0.7, color, 0.095);
+      addRisk(POSE.leftShoulder, intensity, color, 0.105, priority);
+      addRisk(POSE.rightShoulder, intensity, color, 0.105, priority);
+      addRisk(POSE.leftWrist, intensity * 0.7, color, 0.095, priority);
+      addRisk(POSE.rightWrist, intensity * 0.7, color, 0.095, priority);
     }
   }
 
-  return risks.slice(0, 20);
+  return [...risks.values()].map(({ risk }) => risk).slice(0, 20);
 }

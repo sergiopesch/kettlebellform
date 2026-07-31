@@ -1,6 +1,11 @@
 node_modules
 dist
+coverage
+.vercel
 .vite
 .DS_Store
 *.local
 *.log
+/public/models/
+/public/vendor/
+.env*

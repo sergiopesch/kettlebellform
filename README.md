@@ -1,54 +1,106 @@
-# Kettlebell Form Coach
+# KB FORM
 
-![Kettlebell Form Coach anatomy interface](docs/assets/kettlebellform-readme-hero.png)
+[![CI](https://github.com/sergiopesch/kettlebellform/actions/workflows/ci.yml/badge.svg)](https://github.com/sergiopesch/kettlebellform/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/sergiopesch/kettlebellform/actions/workflows/codeql.yml/badge.svg)](https://github.com/sergiopesch/kettlebellform/actions/workflows/codeql.yml)
+[![Live app](https://img.shields.io/badge/live-kettlebellform.vercel.app-c9f970)](https://kettlebellform.vercel.app)
 
-A minimal browser-based kettlebell swing coach using on-device pose inference, personalized calibration, spatial Gaussian confidence fields, and live layered 3D anatomy.
+An on-device, browser-based technique-awareness coach for one deliberately narrow movement: the two-hand, shoulder-height, hip-hinge kettlebell swing.
 
-## What It Does
+[Open KB FORM](https://kettlebellform.vercel.app) · [Read the technical audit](docs/AUDIT_REPORT.md) · [Review the evidence boundary](docs/EVIDENCE_AND_SAFETY.md)
 
-- Runs MediaPipe Pose Landmarker in the browser against a webcam stream.
-- Uses 33 pose landmarks plus world-coordinate landmarks for hinge, knee, torso, shoulder, and depth-path analysis.
-- Calibrates to the user's standing posture before scoring reps.
-- Tracks swing phase, rep count, hinge-to-knee ratio, lockout, shoulder lift, spine stack, depth travel, camera quality, and confidence.
-- Transforms the mirrored camera feed into projected body, muscle, skeleton, and Gaussian correction layers.
-- Shows a Three.js anatomical rig with independently toggled body, muscle, skeleton, and Gaussian field layers.
-- Renders procedural muscle volumes for glutes, hamstrings, quads, calves, spinal erectors, core, lats, deltoids, and forearms with intensity tied to the current swing metrics.
+![KB FORM coaching preview](docs/screenshots/kb-form-preview-desktop.jpg)
 
-## Run
+KB FORM turns a side-view camera feed into confidence-aware movement cues without sending video frames to an application server. It is a general-wellness engineering prototype—not a safety verdict, medical device, injury predictor, or replacement for a qualified coach.
+
+## Product experience
+
+- **Camera-first setup:** clear framing, distance, lighting, movement, and space guidance before permission is requested.
+- **No-camera preview:** the complete coaching interface can be explored without activating a camera.
+- **Fail-closed analysis:** malformed, stale, interrupted, low-visibility, or out-of-order pose sequences return **Not assessed**.
+- **Ordered repetition logic:** a rep requires a continuous backswing → drive → float/finish sequence.
+- **One useful cue at a time:** feedback is limited to observable movement patterns supported by the current landmarks.
+- **Responsive and accessible controls:** keyboard navigation, focus management, live status semantics, reduced motion, 44 px touch targets, and layouts tested down to 320 px.
+
+### Camera setup
+
+![Desktop camera setup](docs/screenshots/kb-form-camera-setup.jpg)
+
+<img src="docs/screenshots/kb-form-camera-setup-mobile.jpg" alt="KB FORM mobile camera setup" width="390" />
+
+## Runtime architecture
+
+```text
+camera
+  → requestVideoFrameCallback
+  → at most one transferable ImageBitmap in flight
+  → dedicated MediaPipe inference Worker
+  → landmark validity, visibility, and continuity gates
+  → deterministic SwingAnalyzer state machine
+  → confidence-aware cue and overlay UI
+```
+
+The initial app bundle stays separate from the Worker and the optional Three.js movement view. Inference prefers GPU and retries on CPU with a fresh MediaPipe module loader if GPU initialization fails.
+
+MediaPipe `0.10.35`, its SIMD WASM runtime, and the full float16 pose model are pinned. `npm ci` copies the runtime from the locked package, downloads the revisioned model, verifies its SHA-256 digest, and stages both as same-origin production assets. Runtime camera sessions therefore do not depend on jsDelivr or Google Storage.
+
+## Coaching and claims boundary
+
+The current analyzer can report pose visibility, swing phase, completed rep count, hinge/knee relationships, shoulder lift, torso/head stack, and camera quality when evidence is sufficient.
+
+Ordinary monocular pose landmarks cannot measure pain, breathing, bracing, muscle activation, spinal load, tissue capacity, kettlebell force, or injury risk. The body, region, skeleton, trail, and optional 3D layers are illustrative views—not anatomical or clinical measurements.
+
+Stop for pain, dizziness, unusual breathlessness, or loss of bell control. New lifters benefit from in-person instruction.
+
+## Local development
+
+Requirements:
+
+- Node.js 24
+- npm 11
+- A modern browser with module Workers, WebAssembly, `ImageBitmap`, and camera APIs
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open the local Vite URL, start the camera, then calibrate while standing tall in frame before swinging.
+Open the printed `127.0.0.1` URL. Use **Preview coaching** for the camera-free path or **Start camera** for the live pipeline.
 
-## Research Basis
+### Quality commands
 
-The MVP is intentionally browser-first and on-device:
+```bash
+npm run check          # lint + typecheck + coverage + verified production build
+npm test               # deterministic unit and component tests
+npm run test:watch     # local test loop
+npm run audit:prod     # production dependency audit
+npm run preview        # serve the production build locally
+```
 
-- MediaPipe Pose Landmarker outputs normalized image landmarks and 3D world landmarks in meters, and supports frame-by-frame video inference in JavaScript.
-  https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker/web_js
-- BlazePose GHUM was designed for real-time, on-device 3D pose estimation from a single RGB image, making it a practical base for live coaching.
-  https://arxiv.org/abs/2206.11678
-- Depth Anything V2 is a stronger route for future dense pixel-depth fusion, but the current app uses pose-world depth and calibrated wrist/landmark travel so it stays performant in a live browser session.
-  https://github.com/DepthAnything/Depth-Anything-V2
-- Kettlebell swing research supports treating swing styles as biomechanically distinct; this app targets the hardstyle/Russian hip-hinge swing pattern, not every valid swing variation.
-  https://pubmed.ncbi.nlm.nih.gov/28593086/
-- Hamstring EMG research found hip-hinge swings produced greater hamstring activity than squat and double-knee-extension swing styles, which is why the coach penalizes squat-dominant reps for this target pattern.
-  https://pubmed.ncbi.nlm.nih.gov/28930870/
+`npm run build:verify` enforces required deployment files, the model checksum, security configuration, SPA fallback, source-map policy, initial/chunk budgets, and a total-output budget.
 
-## Accuracy Model
+## DevOps
 
-The coach does not claim clinical-grade motion capture. It improves reliability by combining:
+- GitHub Actions runs the full quality gate on pull requests and `master`.
+- CodeQL scans JavaScript and TypeScript on pull requests, pushes, a weekly schedule, and manual runs.
+- Dependabot groups weekly npm and GitHub Actions updates.
+- CI uploads the verified production build and coverage report for seven days.
+- Vercel serves the production app over HTTPS with restrictive CSP, camera permissions, frame protection, immutable hashed/runtime asset caching, and SPA deep-link rewrites.
+- Netlify/Cloudflare-compatible `_headers` and `_redirects` files preserve the same static-host defaults.
 
-- calibration against the user's upright hip, knee, torso, shoulder-width, and torso-length profile
-- side-view camera quality checks
-- landmark visibility and jitter weighting
-- 3D hip/knee angles from world landmarks
-- 2D screen-space checks for bell/hand height and camera framing
-- depth travel from wrist world coordinates
-- Gaussian overlays to show uncertainty and local error risk
-- projected 2D anatomy layers and procedural 3D anatomy layers anchored to tracked pose landmarks
+## Validation status
 
-For higher precision, the next engineering step is an optional dense-depth worker using Depth Anything V2 or a WebGPU/Transformers.js depth model, fused with pose landmarks and a camera calibration routine.
+Automated tests cover calibration, tracking loss, ordered rep phases, abstention, malformed input, feedback/risk behavior, setup UI, and camera request/cancellation lifecycle. Browser QA covers the deployed setup and preview flows at desktop and mobile sizes.
+
+The remaining release gates require real evidence: physical camera sessions, held-out athlete videos, qualified coach labels, target-device performance/thermal testing, accessibility testing with assistive technology, privacy-egress inspection, and motion-capture comparison where kinematic claims require it.
+
+## Documentation
+
+- [Technical audit](docs/AUDIT_REPORT.md)
+- [Evidence and safety specification](docs/EVIDENCE_AND_SAFETY.md)
+- [Technical roadmap](docs/TECHNICAL_ROADMAP.md)
+- [Coaching model](docs/coach-model.md)
+- [Generated and source assets](docs/assets.md)
+
+## License
+
+No open-source license has been granted yet. The repository is publicly readable, but reuse rights remain reserved until a license is added.

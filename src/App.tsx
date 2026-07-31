@@ -1,26 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, Dispatch, SetStateAction } from "react";
-import type { PoseLandmarker } from "@mediapipe/tasks-vision";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  BicepsFlexed,
-  Bone,
+  ArrowRight,
   Camera,
-  CheckCircle2,
+  Check,
+  ChevronDown,
+  ChevronsRight,
+  CircleAlert,
+  CircleCheck,
   Gauge,
+  Info,
+  LockKeyhole,
   Pause,
   Play,
   RotateCcw,
-  SlidersHorizontal,
-  UserRound,
-  Video,
-  Waves
+  Settings,
+  ShieldCheck,
+  Square,
+  Target,
+  Timer,
+  X
 } from "lucide-react";
-import { PoseScene } from "./components/PoseScene";
-import { drawPoseOverlay } from "./lib/drawing";
-import { createPoseLandmarker } from "./lib/posePipeline";
-import { createCalibrationProfile, SwingAnalyzer } from "./lib/swingAnalyzer";
-import type { AnalysisFrame, AnatomyLayerId, AnatomyLayerState, CalibrationProfile, CoachSettings, PoseFrame } from "./types";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { usePoseCoach } from "./hooks/usePoseCoach";
+import type {
+  AnalysisFrame,
+  AnatomyLayerId,
+  AnatomyLayerState,
+  CoachSettings,
+  FeedbackSignal
+} from "./types";
+
+const PoseScene = lazy(() =>
+  import("./components/PoseScene").then((module) => ({ default: module.PoseScene }))
+);
 
 const defaultSettings: CoachSettings = {
   heightCm: 178,
@@ -32,502 +45,762 @@ const defaultSettings: CoachSettings = {
 
 const defaultAnatomyLayers: AnatomyLayerState = {
   body: true,
-  muscles: true,
+  muscles: false,
   skeleton: true,
-  gaussian: true
+  gaussian: false
 };
 
-const anatomyLayerControls: Array<{
-  id: AnatomyLayerId;
-  label: string;
-  icon: typeof UserRound;
-}> = [
-  { id: "body", label: "Body", icon: UserRound },
-  { id: "muscles", label: "Muscle", icon: BicepsFlexed },
-  { id: "skeleton", label: "Bone", icon: Bone },
-  { id: "gaussian", label: "Field", icon: Activity }
-];
+const focusLabels: Record<CoachSettings["goal"], string> = {
+  technique: "Technique",
+  power: "Power",
+  conditioning: "Conditioning"
+};
 
-type ModelStatus = "loading" | "ready" | "error";
-type CameraStatus = "idle" | "ready" | "error";
+const phaseLabels: Record<AnalysisFrame["phase"], string> = {
+  waiting: "Waiting",
+  backswing: "Backswing",
+  drive: "Drive",
+  float: "Float",
+  lockout: "Finish"
+};
+
+function formatTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 export default function App() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const overlayRef = useRef<HTMLCanvasElement | null>(null);
-  const landmarkerRef = useRef<PoseLandmarker | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const analyzerRef = useRef(new SwingAnalyzer());
-  const calibrationSamplesRef = useRef<PoseFrame[]>([]);
-  const calibrationStartedAtRef = useRef(0);
-  const lastUiUpdateRef = useRef(0);
-  const lastVideoTimeRef = useRef(-1);
-
-  const [modelStatus, setModelStatus] = useState<ModelStatus>("loading");
-  const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
-  const [modelError, setModelError] = useState("");
-  const [cameraError, setCameraError] = useState("");
-  const [isRunning, setIsRunning] = useState(false);
-  const [analysis, setAnalysis] = useState<AnalysisFrame | null>(null);
   const [settings, setSettings] = useState<CoachSettings>(defaultSettings);
-  const [calibration, setCalibration] = useState<CalibrationProfile | null>(null);
-  const [isCalibrating, setIsCalibrating] = useState(false);
-  const [calibrationProgress, setCalibrationProgress] = useState(0);
   const [anatomyLayers, setAnatomyLayers] = useState<AnatomyLayerState>(defaultAnatomyLayers);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [movementOpen, setMovementOpen] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const previousSourceRef = useRef<"camera" | "demo" | null>(null);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+
+  const coach = usePoseCoach(settings, anatomyLayers);
+  const sessionActive =
+    coach.mode === "requesting" ||
+    coach.mode === "live" ||
+    coach.mode === "demo" ||
+    coach.mode === "paused";
+  const requestingCamera = coach.mode === "requesting";
+  const paused = coach.mode === "paused";
+  const demo = coach.source === "demo";
 
   useEffect(() => {
-    let cancelled = false;
+    if (coach.source !== previousSourceRef.current) {
+      previousSourceRef.current = coach.source;
+      setElapsedSeconds(coach.source === "demo" ? 102 : 0);
+    }
+  }, [coach.source]);
 
-    createPoseLandmarker()
-      .then((landmarker) => {
-        if (cancelled) {
-          landmarker.close();
-          return;
-        }
-        landmarkerRef.current = landmarker;
-        setModelStatus("ready");
-      })
-      .catch((error: unknown) => {
-        setModelStatus("error");
-        setModelError(error instanceof Error ? error.message : "Pose model failed to load.");
-      });
-
-    return () => {
-      cancelled = true;
-      landmarkerRef.current?.close();
-      landmarkerRef.current = null;
-    };
-  }, []);
-
-  const startCamera = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus("error");
-      setCameraError("This browser does not expose camera capture.");
+  useEffect(() => {
+    if (!sessionActive || paused) {
       return;
     }
+    const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1_000);
+    return () => window.clearInterval(timer);
+  }, [paused, sessionActive]);
 
-    try {
-      setCameraError("");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30, max: 60 },
-          facingMode: "user"
-        },
-        audio: false
-      });
-
-      streamRef.current = stream;
-      const video = videoRef.current;
-      if (!video) {
-        return;
-      }
-      video.srcObject = stream;
-      await video.play();
-      setCameraStatus("ready");
-      setIsRunning(true);
-    } catch (error) {
-      setCameraStatus("error");
-      setCameraError(error instanceof Error ? error.message : "Camera permission failed.");
+  const modelLabel = useMemo(() => {
+    if (coach.modelStatus === "loading") {
+      return "Loading model";
     }
-  }, []);
-
-  const stopCamera = useCallback(() => {
-    setIsRunning(false);
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    analyzerRef.current.reset();
-    setAnalysis(null);
-    setCameraStatus("idle");
-  }, []);
-
-  const startCalibration = useCallback(() => {
-    calibrationSamplesRef.current = [];
-    calibrationStartedAtRef.current = performance.now();
-    setCalibrationProgress(0);
-    setIsCalibrating(true);
-  }, []);
-
-  const resetSession = useCallback(() => {
-    analyzerRef.current.reset();
-    calibrationSamplesRef.current = [];
-    setAnalysis(null);
-    setCalibration(null);
-    setIsCalibrating(false);
-    setCalibrationProgress(0);
-  }, []);
-
-  useEffect(() => {
-    if (!isRunning || modelStatus !== "ready") {
-      return;
-    }
-
-    let frameId = 0;
-    let disposed = false;
-
-    const runFrame = () => {
-      if (disposed) {
-        return;
-      }
-
-      const video = videoRef.current;
-      const canvas = overlayRef.current;
-      const landmarker = landmarkerRef.current;
-      if (video && canvas && landmarker && video.readyState >= 2) {
-        if (video.currentTime !== lastVideoTimeRef.current) {
-          lastVideoTimeRef.current = video.currentTime;
-          const timestamp = performance.now();
-          const result = landmarker.detectForVideo(video, timestamp);
-          const landmarks = result.landmarks[0];
-          const worldLandmarks = result.worldLandmarks[0];
-
-          if (landmarks && worldLandmarks) {
-            const poseFrame: PoseFrame = { timestamp, landmarks, worldLandmarks };
-
-            if (isCalibrating) {
-              calibrationSamplesRef.current.push(poseFrame);
-              const elapsed = timestamp - calibrationStartedAtRef.current;
-              const progress = Math.min(1, Math.max(calibrationSamplesRef.current.length / 72, elapsed / 2600));
-              setCalibrationProgress(progress);
-
-              if (progress >= 1) {
-                const profile = createCalibrationProfile(calibrationSamplesRef.current);
-                if (profile) {
-                  setCalibration(profile);
-                  analyzerRef.current.reset();
-                }
-                setIsCalibrating(false);
-              }
-            }
-
-            const nextAnalysis = analyzerRef.current.update(poseFrame, settings, calibration);
-            drawPoseOverlay(canvas, video, nextAnalysis, true, anatomyLayers);
-
-            if (timestamp - lastUiUpdateRef.current > 90) {
-              setAnalysis(nextAnalysis);
-              lastUiUpdateRef.current = timestamp;
-            }
-          } else {
-            drawPoseOverlay(canvas, video, null, true, anatomyLayers);
-          }
-        }
-      }
-
-      frameId = requestAnimationFrame(runFrame);
-    };
-
-    runFrame();
-
-    return () => {
-      disposed = true;
-      cancelAnimationFrame(frameId);
-    };
-  }, [anatomyLayers, calibration, isCalibrating, isRunning, modelStatus, settings]);
-
-  useEffect(() => {
-    return () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
-  const primaryFeedback = analysis?.feedback[0];
-  const modelReady = modelStatus === "ready";
-  const canRun = modelReady && cameraStatus === "ready";
-  const statusText = useMemo(() => {
-    if (modelStatus === "loading") {
-      return "Loading pose model";
-    }
-    if (modelStatus === "error") {
+    if (coach.modelStatus === "error") {
       return "Model unavailable";
     }
-    if (cameraStatus === "idle") {
-      return "Camera idle";
-    }
-    if (cameraStatus === "error") {
-      return "Camera unavailable";
-    }
-    if (isCalibrating) {
-      return "Calibrating";
-    }
-    return isRunning ? "Live coaching" : "Paused";
-  }, [cameraStatus, isCalibrating, isRunning, modelStatus]);
+    return coach.modelDelegate ? `Model ready · ${coach.modelDelegate}` : "Model ready";
+  }, [coach.modelDelegate, coach.modelStatus]);
 
   return (
-    <main className="app-shell">
-      <section className="topbar" aria-label="Session controls">
-        <div className="brand-mark">
-          <Waves aria-hidden="true" />
-          <span>KB Form</span>
+    <div className="app-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to coaching workspace
+      </a>
+
+      <header className="app-header">
+        <a className="brand" href="#main-content" aria-label="KB Form home">
+          <ChevronsRight className="brand-mark" aria-hidden="true" />
+          <span>KB FORM</span>
+        </a>
+
+        <div className="header-status" data-status={coach.modelStatus} role="status" aria-live="polite">
+          <span className="status-dot" aria-hidden="true" />
+          <span>
+            {coach.modelStatus === "error"
+              ? modelLabel
+              : sessionActive
+                ? requestingCamera
+                ? "Connecting camera"
+                : paused
+                  ? "Coaching paused"
+                  : demo
+                    ? "Preview coaching"
+                    : "Live coaching"
+                : modelLabel}
+          </span>
         </div>
 
-        <div className="status-pill" data-status={modelStatus === "error" || cameraStatus === "error" ? "bad" : "good"}>
-          <span className="status-dot" />
-          {statusText}
-        </div>
-
-        <div className="topbar-actions">
-          {cameraStatus === "ready" ? (
-            <button className="icon-button" type="button" onClick={() => setIsRunning((value) => !value)} disabled={!modelReady}>
-              {isRunning ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
-              <span>{isRunning ? "Pause" : "Resume"}</span>
-            </button>
-          ) : (
-            <button className="icon-button primary" type="button" onClick={startCamera} disabled={!modelReady}>
-              <Camera aria-hidden="true" />
-              <span>Start</span>
-            </button>
-          )}
-          <button className="icon-button" type="button" onClick={startCalibration} disabled={!canRun || isCalibrating}>
-            <Gauge aria-hidden="true" />
-            <span>Calibrate</span>
-          </button>
-          <button className="icon-button" type="button" onClick={resetSession}>
-            <RotateCcw aria-hidden="true" />
-            <span>Reset</span>
-          </button>
-        </div>
-      </section>
-
-      <section className="workspace">
-        <div className="capture-panel">
-          <video ref={videoRef} className="camera-feed" playsInline muted />
-          <canvas ref={overlayRef} className="pose-overlay" />
-          <div className="capture-readout">
-            <div>
-              <span>Score</span>
-              <strong>{analysis?.score ?? "--"}</strong>
-            </div>
-            <div>
-              <span>Reps</span>
-              <strong>{analysis?.repCount ?? 0}</strong>
-            </div>
-            <div>
-              <span>Phase</span>
-              <strong>{analysis?.phase ?? "waiting"}</strong>
-            </div>
-          </div>
-          {!isRunning && cameraStatus !== "ready" ? (
-            <div className="camera-empty">
-              <Video aria-hidden="true" />
-              <span>{modelReady ? "Start camera" : "Loading model"}</span>
-            </div>
-          ) : null}
-          {isCalibrating ? (
-            <div className="calibration-banner">
-              <CheckCircle2 aria-hidden="true" />
-              <div className="calibration-track">
-                <span style={{ width: `${Math.round(calibrationProgress * 100)}%` }} />
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        <aside className="coach-panel">
-          <div className="score-card">
-            <div className="score-ring" style={{ "--score": `${analysis?.score ?? 0}%` } as CSSProperties}>
-              <span>{analysis?.score ?? "--"}</span>
-            </div>
-            <div>
-              <span className="eyebrow">Coach read</span>
-              <h1>{primaryFeedback?.label ?? "Awaiting movement"}</h1>
-              <p>{primaryFeedback?.detail ?? "Side-view swings give the coach the cleanest hinge and depth signal."}</p>
-            </div>
-          </div>
-
-          <div className="feedback-stack">
-            {(analysis?.feedback ?? []).map((item) => (
-              <div className="feedback-row" data-severity={item.severity} key={item.id}>
-                <span />
-                <div>
-                  <strong>{item.label}</strong>
-                  <small>{Math.round(item.score * 100)}%</small>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="metric-grid">
-            <MetricTile label="Hinge" value={analysis?.metrics.hingeRatio ?? 0} suffix="x" max={2.2} />
-            <MetricTile label="Depth" value={analysis?.metrics.depthTravel ?? 0} suffix="" max={1} />
-            <MetricTile label="Stack" value={analysis?.metrics.spineStack ?? 0} suffix="" max={1} />
-            <MetricTile label="Camera" value={analysis?.metrics.cameraQuality ?? 0} suffix="" max={1} />
-          </div>
-        </aside>
-
-        <div className="scene-panel">
-          <PoseScene analysis={analysis} layers={anatomyLayers} />
-          <div className="anatomy-controls" aria-label="3D anatomy layers">
-            {anatomyLayerControls.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  className={anatomyLayers[item.id] ? "selected" : ""}
-                  key={item.id}
-                  type="button"
-                  onClick={() =>
-                    setAnatomyLayers((current) => ({
-                      ...current,
-                      [item.id]: !current[item.id]
-                    }))
-                  }
-                  title={`${item.label} layer`}
-                >
-                  <Icon aria-hidden="true" />
-                  <span>{item.label}</span>
+        <div className="header-actions">
+          {sessionActive ? (
+            <>
+              {!requestingCamera ? (
+                <button className="button button-quiet" type="button" onClick={coach.togglePause} aria-label={paused ? "Resume coaching" : "Pause coaching"}>
+                  {paused ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}
+                  <span>{paused ? "Resume" : "Pause"}</span>
                 </button>
-              );
-            })}
-          </div>
-          <div className="scene-readout">
-            <Activity aria-hidden="true" />
-            <span>3D world pose</span>
-            <strong>{analysis ? `${Math.round((analysis.confidence ?? 0) * 100)}%` : "--"}</strong>
-          </div>
+              ) : null}
+              <button
+                className="button button-quiet"
+                type="button"
+                onClick={coach.endSession}
+                aria-label={requestingCamera ? "Cancel camera setup" : "End session"}
+              >
+                <Square aria-hidden="true" />
+                <span>{requestingCamera ? "Cancel" : "End session"}</span>
+              </button>
+            </>
+          ) : null}
+          <button
+            className="button button-icon"
+            type="button"
+            aria-label="Open settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings aria-hidden="true" />
+            <span>Settings</span>
+          </button>
         </div>
+      </header>
 
-        <SettingsPanel
+      <main id="main-content">
+        {sessionActive ? (
+          <LiveWorkspace
+            coach={coach}
+            attachVideo={coach.attachVideo}
+            attachOverlay={coach.attachOverlay}
+            demo={demo}
+            elapsedSeconds={elapsedSeconds}
+            movementOpen={movementOpen}
+            setMovementOpen={setMovementOpen}
+            anatomyLayers={anatomyLayers}
+            setAnatomyLayers={setAnatomyLayers}
+          />
+        ) : (
+          <ReadyWorkspace
+            coach={coach}
+            settings={settings}
+            setSettings={setSettings}
+            movementOpen={movementOpen}
+            setMovementOpen={setMovementOpen}
+          />
+        )}
+      </main>
+
+      {settingsOpen ? (
+        <SettingsDrawer
           settings={settings}
           setSettings={setSettings}
-          calibration={calibration}
-          modelStatus={modelStatus}
-          cameraError={cameraError}
-          modelError={modelError}
-          stopCamera={stopCamera}
+          calibration={coach.calibration}
+          resetCalibration={coach.resetCalibration}
+          onClose={closeSettings}
         />
-      </section>
-    </main>
+      ) : null}
+    </div>
   );
 }
 
-function MetricTile({
-  label,
-  value,
-  suffix,
-  max
+type CoachController = ReturnType<typeof usePoseCoach>;
+
+function ReadyWorkspace({
+  coach,
+  settings,
+  setSettings,
+  movementOpen,
+  setMovementOpen
 }: {
-  label: string;
-  value: number;
-  suffix: string;
-  max: number;
+  coach: CoachController;
+  settings: CoachSettings;
+  setSettings: React.Dispatch<React.SetStateAction<CoachSettings>>;
+  movementOpen: boolean;
+  setMovementOpen: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
-  const normalized = Math.max(0, Math.min(1, value / max));
-  const display = suffix === "x" ? value.toFixed(2) : `${Math.round(value * 100)}`;
+  const requesting = coach.mode === "requesting";
+
   return (
-    <div className="metric-tile">
-      <div>
-        <span>{label}</span>
-        <strong>
-          {display}
-          {suffix}
-        </strong>
+    <div className="ready-layout">
+      <section className="camera-setup" aria-labelledby="setup-title">
+        <div className="setup-copy">
+          <span className="eyebrow">Two-hand hip-hinge swing</span>
+          <h1 id="setup-title">Set up your camera</h1>
+          <p>Side view · full body · well lit</p>
+        </div>
+
+        <div className="framing-stage" aria-label="Camera framing guide">
+          <span className="frame-corner frame-corner-tl" aria-hidden="true" />
+          <span className="frame-corner frame-corner-tr" aria-hidden="true" />
+          <span className="frame-corner frame-corner-bl" aria-hidden="true" />
+          <span className="frame-corner frame-corner-br" aria-hidden="true" />
+          <span className="frame-label frame-label-top">Head in frame</span>
+          <span className="frame-label frame-label-bottom">Feet and floor visible</span>
+          <img className="framing-reference" src="/demo-swing.png" alt="" />
+          <div className="distance-chip">
+            <ArrowRight aria-hidden="true" />
+            <span>Place your device 2–3 m away</span>
+          </div>
+        </div>
+
+        <div className="setup-actions">
+          <button
+            className="button button-primary"
+            type="button"
+            onClick={coach.startCamera}
+            disabled={coach.modelStatus !== "ready" || requesting}
+          >
+            <Camera aria-hidden="true" />
+            <span>{requesting ? "Requesting camera…" : "Start camera"}</span>
+          </button>
+          <button className="button button-secondary" type="button" onClick={coach.startDemo}>
+            <Play aria-hidden="true" />
+            <span>Preview coaching</span>
+          </button>
+        </div>
+
+        <div className="privacy-line">
+          <LockKeyhole aria-hidden="true" />
+          <span>Video frames stay in this browser and are not stored or uploaded by KB FORM.</span>
+        </div>
+
+        {coach.modelError || coach.cameraError ? (
+          <div className="notice notice-error" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span>{coach.cameraError || coach.modelError}</span>
+          </div>
+        ) : null}
+      </section>
+
+      <aside className="prep-rail" aria-labelledby="prep-title">
+        <div className="rail-heading">
+          <span className="eyebrow">Quick check</span>
+          <h2 id="prep-title">Before you swing</h2>
+        </div>
+
+        <ol className="prep-list">
+          <PrepItem number="01" title="Clear the space" detail="Leave room for the bell in front and behind you." />
+          <PrepItem number="02" title="Stand side-on" detail="Keep your head, hands, bell, and feet visible." />
+          <PrepItem number="03" title="Choose one style" detail="This version assesses two-hand, shoulder-height hip-hinge swings." />
+        </ol>
+
+        <SessionSetup settings={settings} setSettings={setSettings} />
+
+        <div className="notice notice-safety">
+          <ShieldCheck aria-hidden="true" />
+          <p>
+            <strong>Technique awareness, not a safety verdict.</strong>
+            Stop for pain, dizziness, unusual breathlessness, or loss of bell control. New lifters benefit from an in-person coach.
+          </p>
+        </div>
+
+        <MovementToggle open={movementOpen} onClick={() => setMovementOpen((value) => !value)} />
+        {movementOpen ? (
+          <div className="movement-explainer">
+            <Activity aria-hidden="true" />
+            <div>
+              <strong>Movement detail activates with a live pose.</strong>
+              <span>It is an illustrative 3D view, not a diagnosis of joints, muscles, or spinal load.</span>
+            </div>
+          </div>
+        ) : null}
+      </aside>
+    </div>
+  );
+}
+
+function LiveWorkspace({
+  coach,
+  attachVideo,
+  attachOverlay,
+  demo,
+  elapsedSeconds,
+  movementOpen,
+  setMovementOpen,
+  anatomyLayers,
+  setAnatomyLayers
+}: {
+  coach: CoachController;
+  attachVideo: CoachController["attachVideo"];
+  attachOverlay: CoachController["attachOverlay"];
+  demo: boolean;
+  elapsedSeconds: number;
+  movementOpen: boolean;
+  setMovementOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  anatomyLayers: AnatomyLayerState;
+  setAnatomyLayers: React.Dispatch<React.SetStateAction<AnatomyLayerState>>;
+}) {
+  const assessed = demo || coach.analysis?.assessmentStatus === "assessed";
+  const repCount = demo ? 8 : coach.analysis?.repCount ?? 0;
+  const phase = demo ? "Drive" : phaseLabels[coach.analysis?.phase ?? "waiting"];
+  const cue = getCue(coach.analysis, demo);
+  const quality = getViewQuality(coach.analysis, demo);
+  const signals = getSignals(coach.analysis, demo, assessed);
+  const recentReps = demo ? [0.78, 0.84, 0.75, 0.9, 0.86] : [];
+
+  return (
+    <div className="live-layout">
+      <section className="capture-card" aria-label={demo ? "Interactive coaching preview" : "Live camera analysis"}>
+        <div className="capture-media">
+          {demo ? (
+            <img className="demo-image" src="/demo-swing-overlay.png" alt="Side-view demonstration of a two-hand shoulder-height kettlebell swing with a pose-tracking overlay" />
+          ) : (
+            <video ref={attachVideo} className="camera-feed" playsInline muted aria-label="Mirrored live camera feed" />
+          )}
+          {!demo ? <canvas ref={attachOverlay} className="pose-overlay" aria-label="Pose tracking overlay" /> : null}
+
+          <div className="capture-topline">
+            <div className="capture-stat">
+              <span>Rep</span>
+              <strong>{repCount}</strong>
+            </div>
+            <div className="phase-chip" data-active={assessed}>
+              <span className="status-dot" aria-hidden="true" />
+              {phase}
+            </div>
+          </div>
+
+          <div className="capture-footer">
+            <div>
+              <Timer aria-hidden="true" />
+              <span>{formatTime(elapsedSeconds)}</span>
+            </div>
+            <div>
+              <LockKeyhole aria-hidden="true" />
+              <span>{demo ? "Interactive sample · no camera" : "On-device · not recorded by KB FORM"}</span>
+            </div>
+          </div>
+
+          {coach.mode === "paused" ? (
+            <div className="pause-overlay" role="status">
+              <Pause aria-hidden="true" />
+              <strong>Coaching paused</strong>
+              <span>{demo ? "The interactive sample is frozen until you resume." : "The camera stays on, but frames are not being analyzed."}</span>
+            </div>
+          ) : null}
+
+          {coach.mode === "requesting" ? (
+            <div className="tracking-hint" role="status" aria-live="polite">
+              <Camera aria-hidden="true" />
+              <span>Allow camera access to begin on-device coaching.</span>
+            </div>
+          ) : !demo && !coach.analysis && coach.mode !== "paused" ? (
+            <div className="tracking-hint" role="status" aria-live="polite">
+              <Target aria-hidden="true" />
+              <span>Move side-on until your full body is visible.</span>
+            </div>
+          ) : null}
+
+          {coach.isCalibrating ? (
+            <div className="calibration-overlay" role="status">
+              <div>
+                <Gauge aria-hidden="true" />
+                <span>Stand tall and still</span>
+              </div>
+              <div
+                className="progress-track"
+                role="progressbar"
+                aria-label="Upright reference progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(coach.calibrationProgress * 100)}
+              >
+                <span style={{ width: `${coach.calibrationProgress * 100}%` }} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {coach.modelError ? (
+          <div className="notice notice-error" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span>{coach.modelError} End the session and reload before trying again.</span>
+          </div>
+        ) : null}
+
+        {!demo && coach.mode !== "requesting" ? (
+          <div className="capture-tools">
+            <button className="button button-secondary" type="button" onClick={coach.startCalibration} disabled={coach.mode !== "live" || coach.isCalibrating}>
+              <Gauge aria-hidden="true" />
+              <span>{coach.calibration ? "Refresh upright reference" : "Set upright reference"}</span>
+            </button>
+            <div className="engine-readout" aria-label="Pose engine performance">
+              <Activity aria-hidden="true" />
+              <span>{coach.inferenceMs ? `${Math.round(coach.inferenceMs)} ms inference` : "Waiting for pose"}</span>
+            </div>
+          </div>
+        ) : null}
+
+        {coach.calibrationMessage ? <p className="inline-status" role="status">{coach.calibrationMessage}</p> : null}
+      </section>
+
+      <aside className="coach-rail" aria-label="Coaching feedback">
+        <section className="cue-card" aria-live="polite">
+          <span className="eyebrow">Current cue</span>
+          <h1>{cue.title}</h1>
+          <p>{cue.detail}</p>
+        </section>
+
+        <section className="quality-card" aria-label="View quality">
+          <div>
+            <span className="eyebrow">View quality</span>
+            <strong>{quality.label}</strong>
+          </div>
+          <div className="quality-meter" aria-hidden="true">
+            <span style={{ width: `${quality.value * 100}%` }} />
+          </div>
+          <small>{quality.detail}</small>
+        </section>
+
+        <section className="signal-section" aria-labelledby="signals-title">
+          <div className="section-heading">
+            <h2 id="signals-title">This rep</h2>
+            <span>{assessed ? "Observable signals" : "Not assessed"}</span>
+          </div>
+          <div className="signal-list">
+            {signals.map((signal) => <SignalRow key={signal.label} {...signal} />)}
+          </div>
+        </section>
+
+        <section className="recent-section" aria-labelledby="recent-title">
+          <div className="section-heading">
+            <h2 id="recent-title">Recent reps</h2>
+            <span>{repCount ? `${repCount} detected` : "Complete a full cycle"}</span>
+          </div>
+          <div className="rep-bars" aria-label={demo ? "Sample recent rep consistency visualization" : "Session rep summary"}>
+            {demo ? recentReps.map((value, index) => (
+              <span key={`${index}-${value}`} style={{ height: `${Math.max(20, value * 100)}%` }} />
+            )) : <small>{repCount ? `${repCount} completed ${repCount === 1 ? "rep" : "reps"}` : "No validated reps yet"}</small>}
+          </div>
+        </section>
+
+        <div className="notice notice-safety compact">
+          <Info aria-hidden="true" />
+          <p>Pose estimates cannot measure pain, bracing, muscle use, spinal load, or injury risk. Stop if you feel pain or lose control.</p>
+        </div>
+
+        <MovementToggle open={movementOpen} onClick={() => setMovementOpen((value) => !value)} />
+
+        {movementOpen ? (
+          <section className="movement-panel" aria-label="Illustrative 3D movement detail">
+            {demo || !coach.analysis ? (
+              <div className="movement-empty">
+                <Activity aria-hidden="true" />
+                <strong>Live pose required</strong>
+                <span>The 3D view opens when a camera pose is confidently tracked.</span>
+              </div>
+            ) : (
+              <ErrorBoundary fallback={<div className="movement-empty"><CircleAlert aria-hidden="true" /><strong>3D view unavailable</strong><span>Your live coaching still works without WebGL.</span></div>}>
+                <Suspense fallback={<div className="movement-empty"><Activity aria-hidden="true" /><strong>Loading movement view…</strong></div>}>
+                  <div className="scene-wrap">
+                    <PoseScene analysis={coach.analysis} layers={anatomyLayers} />
+                  </div>
+                </Suspense>
+              </ErrorBoundary>
+            )}
+            <LayerControls layers={anatomyLayers} setLayers={setAnatomyLayers} />
+            <p className="movement-caption">Illustrative landmark view—not anatomy, diagnosis, or load measurement.</p>
+          </section>
+        ) : null}
+      </aside>
+    </div>
+  );
+}
+
+function SessionSetup({
+  settings,
+  setSettings
+}: {
+  settings: CoachSettings;
+  setSettings: React.Dispatch<React.SetStateAction<CoachSettings>>;
+}) {
+  return (
+    <section className="session-setup" aria-labelledby="session-setup-title">
+      <div className="section-heading">
+        <h2 id="session-setup-title">Session setup</h2>
+        <span>Adjust anytime</span>
       </div>
-      <div className="meter">
-        <span style={{ width: `${normalized * 100}%` }} />
+      <div className="setup-fields">
+        <label>
+          <span>Bell</span>
+          <div className="number-field">
+            <input
+              type="number"
+              min={4}
+              max={64}
+              inputMode="numeric"
+              value={settings.bellKg}
+              onChange={(event) => setSettings((current) => ({ ...current, bellKg: clampNumber(event.target.value, 4, 64) }))}
+            />
+            <span>kg</span>
+          </div>
+        </label>
+        <label>
+          <span>Experience</span>
+          <select
+            value={settings.experience}
+            onChange={(event) => setSettings((current) => ({ ...current, experience: event.target.value as CoachSettings["experience"] }))}
+          >
+            <option value="new">New</option>
+            <option value="trained">Trained</option>
+            <option value="advanced">Advanced</option>
+          </select>
+        </label>
+      </div>
+      <div className="focus-field">
+        <span>Focus</span>
+        <div className="segmented-control" role="group" aria-label="Coaching focus">
+          {(Object.keys(focusLabels) as Array<CoachSettings["goal"]>).map((goal) => (
+            <button
+              type="button"
+              key={goal}
+              aria-pressed={settings.goal === goal}
+              className={settings.goal === goal ? "selected" : ""}
+              onClick={() => setSettings((current) => ({ ...current, goal }))}
+            >
+              {focusLabels[goal]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsDrawer({
+  settings,
+  setSettings,
+  calibration,
+  resetCalibration,
+  onClose
+}: {
+  settings: CoachSettings;
+  setSettings: React.Dispatch<React.SetStateAction<CoachSettings>>;
+  calibration: CoachController["calibration"];
+  resetCalibration: () => void;
+  onClose: () => void;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const drawerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !drawerRef.current) {
+        return;
+      }
+      const focusable = Array.from(
+        drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => !element.hasAttribute("hidden"));
+      if (!focusable.length) {
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    closeButtonRef.current?.focus();
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside ref={drawerRef} className="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div className="drawer-heading">
+          <div>
+            <span className="eyebrow">Preferences</span>
+            <h2 id="settings-title">Coaching setup</h2>
+          </div>
+          <button ref={closeButtonRef} className="button button-icon icon-only" type="button" aria-label="Close settings" onClick={onClose}>
+            <X aria-hidden="true" />
+          </button>
+        </div>
+
+        <SessionSetup settings={settings} setSettings={setSettings} />
+
+        <section className="settings-section">
+          <span className="eyebrow">Supported movement</span>
+          <strong>Two-hand · shoulder-height · hip-hinge swing</strong>
+          <p>The first validated mode stays deliberately narrow. Other swing styles should not be interpreted as faults.</p>
+        </section>
+
+        <section className="settings-section">
+          <span className="eyebrow">Upright reference</span>
+          <strong>{calibration ? `${calibration.sampleCount} accepted samples` : "Using conservative defaults"}</strong>
+          <p>{calibration ? "Your reference is used only in this browser session." : "Set a standing reference once the live camera is running."}</p>
+          {calibration ? (
+            <button className="button button-secondary" type="button" onClick={resetCalibration}>
+              <RotateCcw aria-hidden="true" />
+              <span>Clear reference</span>
+            </button>
+          ) : null}
+        </section>
+
+        <div className="notice notice-safety compact">
+          <ShieldCheck aria-hidden="true" />
+          <p>KB FORM is a general-wellness technique aid. It does not diagnose, treat, prevent injury, or replace a qualified professional.</p>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function PrepItem({ number, title, detail }: { number: string; title: string; detail: string }) {
+  return (
+    <li>
+      <span>{number}</span>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+      <Check aria-hidden="true" />
+    </li>
+  );
+}
+
+function SignalRow({ label, status, detail }: { label: string; status: "good" | "watch" | "waiting"; detail: string }) {
+  return (
+    <div className="signal-row" data-status={status}>
+      {status === "good" ? <CircleCheck aria-hidden="true" /> : status === "watch" ? <CircleAlert aria-hidden="true" /> : <span className="signal-placeholder" aria-hidden="true" />}
+      <div>
+        <strong>{label}</strong>
+        <span>{detail}</span>
       </div>
     </div>
   );
 }
 
-function SettingsPanel({
-  settings,
-  setSettings,
-  calibration,
-  modelStatus,
-  cameraError,
-  modelError,
-  stopCamera
-}: {
-  settings: CoachSettings;
-  setSettings: Dispatch<SetStateAction<CoachSettings>>;
-  calibration: CalibrationProfile | null;
-  modelStatus: ModelStatus;
-  cameraError: string;
-  modelError: string;
-  stopCamera: () => void;
-}) {
+function MovementToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
-    <aside className="settings-panel">
-      <div className="panel-title">
-        <SlidersHorizontal aria-hidden="true" />
-        <span>Profile</span>
-      </div>
-
-      <label className="field">
-        <span>Height</span>
-        <input
-          min={130}
-          max={220}
-          type="number"
-          value={settings.heightCm}
-          onChange={(event) => setSettings((current) => ({ ...current, heightCm: Number(event.target.value) }))}
-        />
-      </label>
-
-      <label className="field">
-        <span>Bell</span>
-        <input
-          min={4}
-          max={64}
-          type="number"
-          value={settings.bellKg}
-          onChange={(event) => setSettings((current) => ({ ...current, bellKg: Number(event.target.value) }))}
-        />
-      </label>
-
-      <label className="field">
-        <span>Level</span>
-        <select
-          value={settings.experience}
-          onChange={(event) =>
-            setSettings((current) => ({
-              ...current,
-              experience: event.target.value as CoachSettings["experience"]
-            }))
-          }
-        >
-          <option value="new">New</option>
-          <option value="trained">Trained</option>
-          <option value="advanced">Advanced</option>
-        </select>
-      </label>
-
-      <div className="segmented" role="group" aria-label="Coaching goal">
-        {(["technique", "power", "rehab"] as const).map((goal) => (
-          <button
-            className={settings.goal === goal ? "selected" : ""}
-            key={goal}
-            type="button"
-            onClick={() => setSettings((current) => ({ ...current, goal }))}
-          >
-            {goal}
-          </button>
-        ))}
-      </div>
-
-      <label className="check-field">
-        <input
-          checked={settings.sideView}
-          type="checkbox"
-          onChange={(event) => setSettings((current) => ({ ...current, sideView: event.target.checked }))}
-        />
-        <span>Side view</span>
-      </label>
-
-      <div className="calibration-card">
-        <span>Calibration</span>
-        <strong>{calibration ? `${calibration.sampleCount} frames` : "Default"}</strong>
-        <small>{calibration ? `Jitter ${calibration.jitter.toFixed(1)} deg` : "Use a tall standing sample"}</small>
-      </div>
-
-      {modelStatus === "error" || cameraError ? (
-        <div className="error-box">
-          <span>{modelError || cameraError}</span>
-        </div>
-      ) : null}
-
-      <button className="text-button" type="button" onClick={stopCamera}>
-        Stop camera
-      </button>
-    </aside>
+    <button className="movement-toggle" type="button" onClick={onClick} aria-expanded={open}>
+      <span>
+        <Activity aria-hidden="true" />
+        Movement detail
+      </span>
+      <ChevronDown aria-hidden="true" />
+    </button>
   );
+}
+
+function LayerControls({
+  layers,
+  setLayers
+}: {
+  layers: AnatomyLayerState;
+  setLayers: React.Dispatch<React.SetStateAction<AnatomyLayerState>>;
+}) {
+  const controls: Array<{ id: AnatomyLayerId; label: string }> = [
+    { id: "body", label: "Body" },
+    { id: "muscles", label: "Regions" },
+    { id: "skeleton", label: "Skeleton" },
+    { id: "gaussian", label: "Trail" }
+  ];
+
+  return (
+    <div className="layer-controls" role="group" aria-label="3D movement layers">
+      {controls.map((control) => (
+        <button
+          type="button"
+          key={control.id}
+          aria-pressed={layers[control.id]}
+          className={layers[control.id] ? "selected" : ""}
+          onClick={() => setLayers((current) => ({ ...current, [control.id]: !current[control.id] }))}
+        >
+          {control.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function getCue(analysis: AnalysisFrame | null, demo: boolean): { title: string; detail: string } {
+  if (demo) {
+    return { title: "Drive through the hips", detail: "Let the bell float. Keep your arms relaxed." };
+  }
+  if (!analysis || analysis.confidence < 0.62) {
+    return { title: "Find a clear side view", detail: "Keep your head, hands, bell, and feet visible before coaching begins." };
+  }
+  if (analysis.assessmentStatus === "unassessed") {
+    return { title: "Ready when you are", detail: "Complete a visible backswing, drive, and float before coaching begins." };
+  }
+  if (analysis.phase === "waiting") {
+    return { title: "Ready when you are", detail: "Begin with a controlled hike, then complete a full swing cycle." };
+  }
+  const feedback = analysis.feedback.find((item) => item.severity !== "good") ?? analysis.feedback[0];
+  return feedback
+    ? { title: feedback.label, detail: feedback.detail }
+    : { title: "Rep observed", detail: "No high-confidence adjustment is available for this frame." };
+}
+
+function getViewQuality(analysis: AnalysisFrame | null, demo: boolean): { label: string; value: number; detail: string } {
+  if (demo) {
+    return { label: "Good", value: 0.88, detail: "Full body · side view · steady light" };
+  }
+  const confidence = analysis?.confidence ?? 0;
+  if (confidence >= 0.78) {
+    return { label: "Good", value: confidence, detail: "Full body and key landmarks are visible" };
+  }
+  if (confidence >= 0.62) {
+    return { label: "Fair", value: confidence, detail: "Keep the bell and both feet in frame" };
+  }
+  return { label: "Adjust view", value: Math.max(0.12, confidence), detail: "Move side-on and show your full body" };
+}
+
+function signalFromFeedback(label: string, feedback: FeedbackSignal | undefined, assessed: boolean) {
+  if (!assessed || !feedback) {
+    return {
+      label,
+      status: "waiting" as const,
+      detail: assessed ? "No supported observation" : "Awaiting a clear full rep"
+    };
+  }
+  const status = feedback.severity === "good" ? "good" as const : "watch" as const;
+  return { label, status, detail: feedback.severity === "good" ? "On track" : "Watch next rep" };
+}
+
+function getSignals(analysis: AnalysisFrame | null, demo: boolean, assessed: boolean) {
+  if (demo) {
+    return [
+      { label: "Hip hinge", status: "good" as const, detail: "On track" },
+      { label: "Knee bend", status: "watch" as const, detail: "Watch next rep" },
+      { label: "Tall finish", status: "good" as const, detail: "On track" }
+    ];
+  }
+
+  return [
+    signalFromFeedback("Hip hinge", analysis?.feedback.find((item) => item.joint === "hips"), assessed),
+    signalFromFeedback("Knee bend", analysis?.feedback.find((item) => item.joint === "knees"), assessed),
+    signalFromFeedback("Tall finish", analysis?.feedback.find((item) => item.joint === "spine"), assessed)
+  ];
+}
+
+function clampNumber(raw: string, minimum: number, maximum: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : minimum;
 }
