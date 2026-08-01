@@ -887,7 +887,8 @@ function SettingsDrawer({
             After you opt in, the browser sends only an allowlisted cue ID to our server and
             OpenAI Realtime receives its matching positioning phrase. Camera frames, landmarks,
             and microphone audio are never sent. If Realtime fails, KB FORM uses a local English
-            device voice when available, then falls back to visual cues.
+            device voice when available, then falls back to visual cues. Availability and
+            OS/browser privacy behaviour vary.
           </p>
         </section>
 
@@ -918,7 +919,7 @@ function VoiceCoachToggle({
       : voiceCoach.enabled && voiceCoach.transport === "realtime"
         ? `On · ${activeProfile.label} · OpenAI Realtime`
         : voiceCoach.enabled && voiceCoach.transport === "device"
-          ? "On · private device fallback · tone may vary"
+          ? "On · local device fallback · voice/privacy may vary"
           : "Off · no microphone access";
 
   const chooseProfile = (profile: VoiceProfileId) => {

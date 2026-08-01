@@ -154,7 +154,8 @@ test("on-device speech starts only after opt-in and never requests Realtime endp
 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(toggle).toContainText("private device fallback");
+  await expect(toggle).toContainText("local device fallback");
+  await expect(toggle).toContainText("privacy may vary");
   await expect
     .poll(() =>
       page.evaluate(() => (window as SpeechProbeWindow).__KB_FORM_E2E_SPOKEN__)

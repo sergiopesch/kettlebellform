@@ -188,7 +188,7 @@ describe("KB FORM setup experience", () => {
     expect((speak.mock.calls[0][0] as Utterance).text).toBe("Voice framing coach on.");
     expect((speak.mock.calls[0][0] as Utterance).voice).toBe(localVoice);
     expect(screen.queryByText(/no microphone or audio recording/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/private device fallback/i)).toBeInTheDocument();
+    expect(screen.getByText(/local device fallback.*privacy may vary/i)).toBeInTheDocument();
   });
 
   it("lets the user choose either AI command profile before enabling speech", async () => {
