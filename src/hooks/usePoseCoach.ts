@@ -24,6 +24,21 @@ import type {
 export type ModelStatus = "loading" | "ready" | "error";
 export type SessionMode = "ready" | "requesting" | "live" | "paused" | "demo";
 export type SessionSource = "camera" | "demo" | null;
+export type CameraFacingMode = "environment" | "user";
+
+export type CameraOption = {
+  deviceId: string;
+  label: string;
+};
+
+export type CameraOptics = {
+  mirrored: boolean;
+  mirroringKnown: boolean;
+  width: number | null;
+  height: number | null;
+  aspectRatio: number | null;
+  minimumZoomApplied: boolean;
+};
 
 export type ClipAnalysisStage = "preparing" | "finding" | "checking" | "building";
 
@@ -78,8 +93,116 @@ const LOST_POSE_TIMEOUT_MS = 750;
 const CLIP_SAMPLE_INTERVAL_MS = 1_000 / 15;
 const CLIP_TOTAL_TIMEOUT_MS = 30_000;
 const CLIP_DECODE_TIMEOUT_MS = 6_000;
-const CLIP_PROCESSING_TIMEOUT_MS = 10_000;
+const CLIP_EXTRACTION_TIMEOUT_MS = 10_000;
+const CLIP_INFERENCE_TIMEOUT_MS = 15_000;
 const CLIP_END_TOLERANCE_SECONDS = 0.35;
+
+type ZoomCapabilities = MediaTrackCapabilities & {
+  zoom?: { min: number; max: number; step?: number };
+};
+
+type ZoomSettings = MediaTrackSettings & {
+  zoom?: number;
+};
+
+function cameraConstraints(
+  facingMode: CameraFacingMode,
+  deviceId?: string
+): MediaStreamConstraints {
+  const video = {
+    width: { ideal: 960 },
+    height: { ideal: 720 },
+    aspectRatio: { ideal: 4 / 3 },
+    frameRate: { ideal: 30, max: 30 },
+    resizeMode: { ideal: "none" },
+    ...(deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: facingMode } })
+  } as MediaTrackConstraints & { resizeMode: { ideal: "none" } };
+  return {
+    video,
+    audio: false
+  };
+}
+
+function canFallbackFromDeviceError(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    (error.name === "NotFoundError" || error.name === "OverconstrainedError")
+  );
+}
+
+function getCameraErrorMessage(error: unknown): string {
+  if (!(error instanceof DOMException)) {
+    return "The camera could not start. Check browser camera access and try again.";
+  }
+  if (error.name === "NotAllowedError" || error.name === "SecurityError") {
+    return "Camera access was blocked. Allow camera access for this site, then try again.";
+  }
+  if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
+    return "That camera is no longer available. Choose another camera and try again.";
+  }
+  if (error.name === "NotReadableError" || error.name === "AbortError") {
+    return "The camera is busy or could not be read. Close other camera apps, then try again.";
+  }
+  return "The camera could not start. Check browser camera access and try again.";
+}
+
+async function applyMinimumZoom(track: MediaStreamTrack): Promise<boolean> {
+  try {
+    if (!track.getCapabilities || !track.getSettings || !track.applyConstraints) {
+      return false;
+    }
+    const capabilities = track.getCapabilities() as ZoomCapabilities;
+    const settings = track.getSettings() as ZoomSettings;
+    const minimum = capabilities.zoom?.min;
+    const current = settings.zoom;
+    if (!Number.isFinite(minimum) || !Number.isFinite(current) || current! <= minimum! + 0.001) {
+      return false;
+    }
+    const existing = track.getConstraints?.() ?? {};
+    await track.applyConstraints({
+      ...existing,
+      advanced: [
+        ...(existing.advanced ?? []),
+        { zoom: minimum } as MediaTrackConstraintSet
+      ]
+    });
+    const applied = (track.getSettings() as ZoomSettings).zoom;
+    return Number.isFinite(applied) && applied! <= minimum! + 0.001;
+  } catch {
+    return false;
+  }
+}
+
+function getCameraOptics(
+  track: MediaStreamTrack,
+  preferredFacingMode: CameraFacingMode,
+  minimumZoomApplied: boolean
+): CameraOptics {
+  let settings: MediaTrackSettings = {};
+  try {
+    settings = track.getSettings?.() ?? {};
+  } catch {
+    // Camera settings are optional diagnostics; keep the granted stream usable.
+  }
+  const width = Number.isFinite(settings.width) ? settings.width! : null;
+  const height = Number.isFinite(settings.height) ? settings.height! : null;
+  const measuredAspect = width && height ? width / height : null;
+  const aspectRatio = Number.isFinite(settings.aspectRatio)
+    ? settings.aspectRatio!
+    : measuredAspect;
+  return {
+    mirrored: settings.facingMode
+      ? settings.facingMode === "user"
+      : preferredFacingMode === "user",
+    mirroringKnown: settings.facingMode === "user" || settings.facingMode === "environment",
+    width,
+    height,
+    aspectRatio,
+    minimumZoomApplied
+  };
+}
 
 function isFinitePose(landmarks: NormalizedLandmark[] | null, worldLandmarks: Landmark[] | null): boolean {
   if (!landmarks || !worldLandmarks || landmarks.length < 33 || worldLandmarks.length < 33) {
@@ -124,6 +247,8 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
   const calibrationStartedAtRef = useRef(0);
   const lastPoseAtRef = useRef(0);
   const lastUiUpdateRef = useRef(0);
+  const preferredFacingModeRef = useRef<CameraFacingMode>("environment");
+  const cameraMirroredRef = useRef(false);
 
   const [modelStatus, setModelStatus] = useState<ModelStatus>("loading");
   const [modelError, setModelError] = useState("");
@@ -131,6 +256,9 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
   const [mode, setMode] = useState<SessionMode>("ready");
   const [source, setSource] = useState<SessionSource>(null);
   const [cameraError, setCameraError] = useState("");
+  const [cameraOptions, setCameraOptions] = useState<CameraOption[]>([]);
+  const [activeCameraId, setActiveCameraId] = useState<string | null>(null);
+  const [cameraOptics, setCameraOptics] = useState<CameraOptics | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisFrame | null>(null);
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
   const [calibration, setCalibration] = useState<CalibrationProfile | null>(null);
@@ -292,7 +420,7 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           if (performance.now() - lastPoseAtRef.current > LOST_POSE_TIMEOUT_MS) {
             setAnalysis(null);
             if (canvas && video) {
-              drawPoseOverlay(canvas, video, null, true, anatomyLayersRef.current);
+              drawPoseOverlay(canvas, video, null, cameraMirroredRef.current, anatomyLayersRef.current);
             }
           }
           return;
@@ -335,7 +463,13 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
             calibrationRef.current
           );
           if (canvas && video) {
-            drawPoseOverlay(canvas, video, nextAnalysis, true, anatomyLayersRef.current);
+            drawPoseOverlay(
+              canvas,
+              video,
+              nextAnalysis,
+              cameraMirroredRef.current,
+              anatomyLayersRef.current
+            );
           }
 
           if (message.sourceTimestamp - lastUiUpdateRef.current >= 100) {
@@ -428,6 +562,10 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     setAnalysis(null);
     setInferenceMs(null);
     setCalibrationMessage("");
+    setCameraOptions([]);
+    setActiveCameraId(null);
+    setCameraOptics(null);
+    cameraMirroredRef.current = false;
     lastUiUpdateRef.current = 0;
     setSource(null);
     updateMode("ready");
@@ -437,34 +575,85 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     }
   }, [abandonFrameOperation, cancelCalibration, releaseCamera, updateMode]);
 
-  const startCamera = useCallback(async () => {
+  const refreshCameraOptions = useCallback(async () => {
+    const mediaDevices = navigator.mediaDevices;
+    const stream = streamRef.current;
+    if (!stream || !mediaDevices?.enumerateDevices) {
+      return;
+    }
+    const requestId = cameraRequestIdRef.current;
+    try {
+      const devices = await mediaDevices.enumerateDevices();
+      if (cameraRequestIdRef.current !== requestId || streamRef.current !== stream) {
+        return;
+      }
+      const cameras = devices
+        .filter((device) => device.kind === "videoinput" && device.deviceId)
+        .filter(
+          (device, index, all) =>
+            all.findIndex((candidate) => candidate.deviceId === device.deviceId) === index
+        )
+        .map((device, index) => ({
+          deviceId: device.deviceId,
+          label: device.label.trim() || `Camera ${index + 1}`
+        }));
+      setCameraOptions(cameras);
+      const currentDeviceId = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+      if (currentDeviceId) {
+        setActiveCameraId(currentDeviceId);
+      }
+    } catch {
+      // The current camera remains usable when device enumeration is unavailable.
+    }
+  }, []);
+
+  const requestCamera = useCallback(async (
+    facingMode: CameraFacingMode,
+    selectedDeviceId?: string
+  ) => {
     if (cameraRequestInFlightRef.current) {
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.getUserMedia) {
       setCameraError("Camera capture is unavailable in this browser.");
       return;
     }
 
     const requestId = cameraRequestIdRef.current + 1;
+    const endingLiveJobId = liveJobIdRef.current;
     cameraRequestIdRef.current = requestId;
     cameraRequestInFlightRef.current = true;
+    preferredFacingModeRef.current = facingMode;
+    abandonFrameOperation("live", endingLiveJobId, true);
+    liveJobIdRef.current += 1;
+    liveFrameIdRef.current = 0;
+    liveSourceTimestampRef.current = Number.NEGATIVE_INFINITY;
     setSource("camera");
     updateMode("requesting");
     setCameraError("");
     setCalibrationMessage("");
+    setAnalysis(null);
+    setInferenceMs(null);
+    cancelCalibration();
+    analyzerRef.current.reset();
     releaseCamera();
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30, max: 30 },
-          facingMode: "user"
-        },
-        audio: false
-      });
+      let usedDeviceFallback = false;
+      let stream: MediaStream;
+      try {
+        stream = await mediaDevices.getUserMedia(cameraConstraints(facingMode, selectedDeviceId));
+      } catch (error) {
+        if (!selectedDeviceId || !canFallbackFromDeviceError(error)) {
+          throw error;
+        }
+        if (cameraRequestIdRef.current !== requestId) {
+          return;
+        }
+        usedDeviceFallback = true;
+        stream = await mediaDevices.getUserMedia(cameraConstraints(facingMode));
+      }
       if (cameraRequestIdRef.current !== requestId) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -472,28 +661,80 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
 
       streamRef.current = stream;
       const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.onended = () => endSession();
+      if (!videoTrack) {
+        throw new DOMException("No video track was returned.", "NotFoundError");
       }
-      liveJobIdRef.current += 1;
-      liveFrameIdRef.current = 0;
-      liveSourceTimestampRef.current = Number.NEGATIVE_INFINITY;
-      analyzerRef.current.reset();
+      const minimumZoomApplied = await applyMinimumZoom(videoTrack);
+      if (cameraRequestIdRef.current !== requestId) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      const optics = getCameraOptics(videoTrack, facingMode, minimumZoomApplied);
+      cameraMirroredRef.current = optics.mirrored;
+      setCameraOptics(optics);
+      const settings = videoTrack.getSettings?.() ?? {};
+      setActiveCameraId(settings.deviceId ?? (usedDeviceFallback ? null : selectedDeviceId ?? null));
+      videoTrack.onended = () => endSession();
+      lastUiUpdateRef.current = 0;
+      lastPoseAtRef.current = performance.now();
       updateMode("live");
+
+      void refreshCameraOptions();
     } catch (error) {
       if (cameraRequestIdRef.current !== requestId) {
         return;
       }
       releaseCamera();
       setSource(null);
+      setCameraOptions([]);
+      setCameraOptics(null);
+      setActiveCameraId(null);
+      cameraMirroredRef.current = false;
       updateMode("ready");
-      setCameraError(error instanceof Error ? error.message : "Camera permission was not granted.");
+      setCameraError(getCameraErrorMessage(error));
     } finally {
       if (cameraRequestIdRef.current === requestId) {
         cameraRequestInFlightRef.current = false;
       }
     }
-  }, [endSession, releaseCamera, updateMode]);
+  }, [abandonFrameOperation, cancelCalibration, endSession, refreshCameraOptions, releaseCamera, updateMode]);
+
+  const startCamera = useCallback(
+    (facingMode: CameraFacingMode = "environment") => requestCamera(facingMode),
+    [requestCamera]
+  );
+
+  const selectCamera = useCallback(
+    (deviceId: string) => {
+      if (!deviceId || deviceId === activeCameraId) {
+        return;
+      }
+      void requestCamera(preferredFacingModeRef.current, deviceId);
+    },
+    [activeCameraId, requestCamera]
+  );
+
+  const toggleCameraMirror = useCallback(() => {
+    setCameraOptics((current) => {
+      if (!current) {
+        return current;
+      }
+      const mirrored = !current.mirrored;
+      cameraMirroredRef.current = mirrored;
+      return { ...current, mirrored };
+    });
+  }, []);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (source !== "camera" || mode !== "live" || !mediaDevices?.addEventListener) {
+      return;
+    }
+    const onDeviceChange = () => void refreshCameraOptions();
+    mediaDevices.addEventListener("devicechange", onDeviceChange);
+    return () => mediaDevices.removeEventListener("devicechange", onDeviceChange);
+  }, [mode, refreshCameraOptions, source]);
 
   const startDemo = useCallback(() => {
     cameraRequestIdRef.current += 1;
@@ -503,6 +744,10 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     setCameraError("");
     setCalibrationMessage("");
     setAnalysis(null);
+    setCameraOptions([]);
+    setActiveCameraId(null);
+    setCameraOptics(null);
+    cameraMirroredRef.current = false;
     setSource("demo");
     updateMode("demo");
   }, [cancelCalibration, releaseCamera, updateMode]);
@@ -756,7 +1001,7 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
               ? "The pose engine stopped responding while analyzing a video frame."
               : "Extracting a video frame took too long.";
             settleError(new Error(message));
-          }, CLIP_PROCESSING_TIMEOUT_MS);
+          }, operation.transferred ? CLIP_INFERENCE_TIMEOUT_MS : CLIP_EXTRACTION_TIMEOUT_MS);
         };
 
         activeClipRunRef.current = {
@@ -821,6 +1066,10 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
               try {
                 worker.postMessage(request, [request.frame]);
                 operation.transferred = true;
+                // Extraction and Worker inference are separate bounded phases.
+                // Re-arm here so a slow-but-valid extraction does not consume
+                // the cold inference budget on software-rendered browsers.
+                armProcessingTimeout(operation);
               } catch (error) {
                 clipFrameWaiterRef.current = null;
                 rejectFrame(error instanceof Error ? error : new Error("The video frame could not be transferred."));
@@ -1070,6 +1319,19 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     let videoFrameHandle = 0;
     let animationFrameHandle = 0;
     const jobId = liveJobIdRef.current;
+    const syncVideoDimensions = () => {
+      if (!active || video.videoWidth < 1 || video.videoHeight < 1) {
+        return;
+      }
+      setCameraOptics((current) => current ? {
+        ...current,
+        width: video.videoWidth,
+        height: video.videoHeight,
+        aspectRatio: video.videoWidth / video.videoHeight
+      } : current);
+    };
+    video.addEventListener("loadedmetadata", syncVideoDimensions);
+    video.addEventListener("resize", syncVideoDimensions);
 
     const submitFrame = async (sourceTimestamp: number) => {
       if (!active || inFlightRef.current || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -1146,18 +1408,24 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       }
     };
 
-    void video.play().then(scheduleVideoFrame).catch((error: unknown) => {
+    void video.play().then(scheduleVideoFrame).catch(() => {
       if (!active) {
         return;
       }
       cameraRequestIdRef.current += 1;
       releaseCamera();
       setSource(null);
+      setCameraOptions([]);
+      setActiveCameraId(null);
+      setCameraOptics(null);
+      cameraMirroredRef.current = false;
       updateMode("ready");
-      setCameraError(error instanceof Error ? error.message : "The camera feed could not start.");
+      setCameraError("The camera feed could not start. Check camera access and try again.");
     });
     return () => {
       active = false;
+      video.removeEventListener("loadedmetadata", syncVideoDimensions);
+      video.removeEventListener("resize", syncVideoDimensions);
       if (videoFrameHandle && "cancelVideoFrameCallback" in video) {
         video.cancelVideoFrameCallback(videoFrameHandle);
       }
@@ -1199,6 +1467,9 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     mode,
     source,
     cameraError,
+    cameraOptions,
+    activeCameraId,
+    cameraOptics,
     analysis,
     inferenceMs,
     calibration,
@@ -1207,6 +1478,9 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     calibrationMessage,
     clipBusy,
     startCamera,
+    selectCamera,
+    toggleCameraMirror,
+    refreshCameraOptions,
     startDemo,
     togglePause,
     endSession,

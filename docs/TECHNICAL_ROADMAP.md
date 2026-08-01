@@ -1,6 +1,6 @@
 # Kettlebell Form Coach: Technical Roadmap
 
-Status: implementation-aligned roadmap · Evidence checked: 1 August 2026 · Scope: browser camera capture, pose inference, swing analysis, performance, privacy, and validation
+Status: implementation-aligned roadmap · Evidence checked: 1 August 2026 · Scope: browser camera capture, pose inference, optional AI-generated speech, swing analysis, performance, privacy, and validation
 
 ## Delivery labels
 
@@ -19,10 +19,14 @@ The app now keeps live and selected-clip pose inference off the main thread and 
 camera -> requestVideoFrameCallback -> one transferable ImageBitmap
        -> MediaPipe VIDEO mode (one pose) in a module Worker
 clip   -> 4–10 s window + normalized ROI -> crop/downscale to <=640 px
-       -> pause media time during each inference -> MediaPipe IMAGE mode (up to two poses)
+       -> pause media time through extraction/inference -> MediaPipe IMAGE mode (up to two poses)
        -> accept body evidence only when exactly one pose is returned
 both   -> main-thread calibration/SwingAnalyzer
        -> overlay and latest-result React UI
+voice  -> opt-in audio-only WebRTC + signed short-lived session capability
+       -> allowlisted cue ID -> trusted same-origin sideband control
+       -> server-owned fixed text -> gpt-realtime-2.1 audio (cedar or marin)
+       -> local English device speech on failure, or visual-only
 ```
 
 This split is intentional: synchronous MediaPipe inference owns the expensive worker boundary, while `SwingAnalyzer` remains a lightweight, pure, directly testable main-thread state machine. Move the analyzer only if profiling shows it is a meaningful source of main-thread work.
@@ -40,6 +44,8 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 | Bundle loading | The Three.js movement scene is loaded with `React.lazy()` and `Suspense`, keeping it out of the initial application chunk. | **Implemented** |
 | Test foundation | Vitest, Testing Library, coverage thresholds, analyzer continuity/assessment tests, clip utility and aggregation tests, Worker-protocol hook tests, and application tests are configured. | **Implemented; real corpus and target-device tests remain** |
 | Initial assessment guard | Low tracking visibility, any missing required full-body landmark, wrist visibility, or camera quality clears tracking state and returns `assessmentStatus: "unassessed"`; clip results additionally require three completed reps, enough supported frames and coverage, and recurring evidence. Clinical/rehab goals are absent. | **Implemented; qualify thresholds and broaden capture checks** |
+| Adaptive camera optics | Room view prefers environment-facing native 4:3 capture with browser cropping disabled; Selfie view is explicit. The preview and overlay use `contain`, exposed cameras are permission-gated and selectable, mirroring follows actual track settings with an explicit user override, and minimum zoom is best-effort only when the granted track exposes it. | **Implemented; physical device/FOV qualification remains** |
+| Spoken framing | An opt-in state machine sends only validated cue IDs to a same-origin endpoint. A signed capability binds the request to a receive-only WebRTC call, and the trusted server maps IDs to fixed text over an OpenAI sideband WebSocket. The browser has no Realtime event channel. Male presentation uses built-in `cedar`; female presentation uses built-in `marin`. No microphone, video, frame, or landmark is sent. Realtime failure uses an available local English device voice, otherwise visual-only. | **Implemented; production transport, timing, disclosure, and accessibility qualification remain** |
 
 ## Remaining architecture and product gaps
 
@@ -53,8 +59,8 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 | Side-view landmarks | Left and right joint angles and wrists are averaged. | A side view commonly occludes the far side. Per-joint near-side selection based on visibility/stability should be evaluated instead of unconditional averaging. |
 | Coaching model | Goal/experience-dependent thresholds generate up to four internal per-frame feedback signals and a 0–100 score; the UI selects one current cue. Clinical/rehab modes are absent. | Thresholds are not yet validated against kettlebell ground truth or coach agreement. Add persistence, rep-level evidence, confidence, and a refractory period so the selected cue does not change too rapidly. |
 | Kettlebell path | Wrist midpoint is treated as the bell/hand path; entered bell mass only adjusts one cue's severity. | MediaPipe does not detect the kettlebell. The app cannot infer bell centre, mass, forces, torque, spinal load, or muscle activation from these landmarks. |
-| Testing and observability | Unit/application tests, clip scheduling/cleanup protocol tests, coverage gates, and a documented public-video transport matrix now exist. Local Chrome runs exercised H.264, VP8, VP9, VFR, exact EOF, damaged-media recovery, no-person abstention, upload, crop, analysis, focus restoration, 390 px reflow, and the loaded-asset inventory. | Automate the public transport matrix; add a consented coach-labelled accuracy corpus, target-device performance baselines, cue metrics, screen-reader testing, and production egress tests. |
-| Privacy and supply chain | Fonts, the locked WASM runtime, and the checksum-verified model are staged at install and served from the application origin. Production CSP permits only same-origin font, runtime, model, and connection paths; a local browser asset inventory found no external resource. | Audit production browser egress and MediaPipe telemetry before claiming offline operation or first-party-only delivery. |
+| Testing and observability | Unit/application tests, clip scheduling/cleanup protocol tests, Realtime profile/message/server tests, coverage gates, and a documented public-video transport matrix now exist. Local Chrome runs exercised H.264, VP8, VP9, VFR, exact EOF, damaged-media recovery, no-person abstention, upload, crop, analysis, focus restoration, 390 px reflow, and the loaded-asset inventory. | Automate the public transport matrix; add production Realtime/WAF checks, a consented coach-labelled accuracy corpus, target-device performance baselines, cue metrics, and screen-reader testing. |
+| Privacy and supply chain | Visual inference, fonts, locked WASM, and the checksum-verified model remain on-device/same-origin. AI speech is a separate explicit opt-in: the browser sends audio-only session negotiation and cue IDs to the same-origin server; only the trusted sideband handler sends fixed text to OpenAI and generated audio returns. No microphone, video, frame, or landmark is attached. | Audit production egress and MediaPipe telemetry; verify OpenAI/Vercel retention and logs; do not claim the voice-enabled experience is offline or first-party-only. |
 
 ## ADR-001: worker-owned inference with fresh-frame backpressure
 
@@ -64,7 +70,7 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 
 1. A dedicated module Worker owns MediaPipe initialization, live `detectForVideo()`, clip `detect()`, running-mode changes, delegate fallback, and model cleanup only.
 2. The main thread owns camera permission, video presentation, calibration, the lightweight/pure `SwingAnalyzer`, overlay/React rendering, and user controls.
-3. `HTMLVideoElement.requestVideoFrameCallback()` is the primary scheduler. Its media timestamp is carried with the frame; motion is not derived from frame counts. Clip playback pauses while a sampled frame is inferred so slower hardware does not skip through the analyzer's continuity window.
+3. `HTMLVideoElement.requestVideoFrameCallback()` is the primary scheduler. Its media timestamp is carried with the frame; motion is not derived from frame counts. Clip playback pauses through extraction and inference for each sampled frame so slower hardware does not skip through the analyzer's continuity window.
 4. Enforce a queue invariant of **one `ImageBitmap` in flight and no pending bitmap**. `inFlight` covers bitmap creation plus worker processing.
 5. If another camera callback arrives while busy, skip that frame. Never append to or replace within a FIFO queue.
 6. Transfer the `ImageBitmap` to the Worker, which closes it in `finally`. If transfer throws synchronously, close it on the main thread. An `OffscreenCanvas` or other worker-safe image source may be qualified later as a compatibility fallback.
@@ -138,6 +144,66 @@ Canary 1.0.1 behind a build/runtime engine flag that does not require sending ca
 
 **Evidence:** npm lists `@mediapipe/tasks-vision` 1.0.0 as published on 28 July 2026 and 1.0.1 as the current `latest`, published on 31 July 2026. That short production history supports a measured migration rather than an automatic upgrade. [npm package versions](https://www.npmjs.com/package/%40mediapipe/tasks-vision?activeTab=versions) The official model card reports higher 2D landmark accuracy for Heavy than Full and Lite, but its performance numbers are old native TFLite measurements, not Web guarantees. [BlazePose GHUM model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf)
 
+## ADR-003: preserve the complete camera frame and keep framing visual-first
+
+**Status:** **implemented** as progressive enhancement; physical-device qualification remains.
+
+### Decision
+
+1. Make **Room view** the initial best-effort choice: environment facing, native-preferred 4:3, 960×720 ideal, no user-agent crop, and at most 30 fps. Keep **Selfie view** explicit for users who need the screen facing them. All initial constraints are `ideal`, so a single-camera laptop still falls back naturally.
+2. Render camera video and canvas overlay with `object-fit: contain` and the granted track/video aspect ratio. Never crop the live preview independently from the full source passed to inference.
+3. After permission succeeds, enumerate exposed `videoinput` devices and let the user select an exact `deviceId`. Stop the old track first. A missing selected device may fall back to the chosen Room/Selfie preference; permission and security failures must not be retried.
+4. Do not infer field of view, lens type, or quality from resolution or a human-readable label. The standard exposes no FOV or “widest lens” constraint. A label that happens to say “Ultra Wide” is display text, not machine-readable evidence. [Media Capture and Streams](https://www.w3.org/TR/mediacapture-streams/)
+5. Do not request PTZ permission. If an already-authorized track exposes a finite zoom range and its current zoom exceeds the minimum, try that minimum once, confirm the setting, and retain the stream on any error. Minimum zoom cannot manufacture pixels outside the selected lens's FOV. [MediaStream Image Capture](https://www.w3.org/TR/image-capture/)
+6. Derive mirroring from the granted track's `facingMode` and apply it consistently to the preview, overlay, and framing-coordinate transform. If the browser omits facing metadata, disclose that uncertainty through an explicit mirror-preview control so the user can keep visual and spoken directions aligned.
+7. Keep framing feedback visual first. Optional speech may render only the fixed, validated text mapped to a known message ID. It never activates speech recognition or a microphone, and it never receives pose landmarks or arbitrary analyzer output.
+8. Require a correction to remain stable before speaking, keep at most one owned output, repeat unresolved corrections slowly, and cancel owned Realtime/device speech on pause, movement, calibration, hidden page, disable, end, or unmount. Preserve a four-second quiet period after recent movement so transient tracking loss during a rep cannot restart framing speech.
+
+### Qualification gates
+
+- front/rear/OS-exposed ultra-wide selection on iOS, Android, macOS, Windows, and external cameras;
+- portrait/landscape rotation with overlay alignment and no preview/inference mismatch;
+- allow, deny, revoke, busy-device, disconnected-device, exact-device fallback, background, and repeated-session lifecycle tests;
+- verify actual track settings, full-frame visibility, and camera picker labels without claiming lens FOV;
+- spoken-cue latency, exact-text adherence, direction comprehension, queue/cancellation, device-volume behavior, VoiceOver/TalkBack coexistence, reduced motion, AI disclosure, and device-fallback variability;
+- production network inspection confirming that the browser transfer is limited to audio-only session negotiation, a signed capability, selected cue IDs, and returned audio; only the trusted server may send the selected profile, privacy-safe metadata, and fixed cue text to OpenAI—with no frames, landmarks, microphone audio, camera/clip video, or speech-recognition data.
+
+## ADR-004: output-only Realtime speech through signed session and sideband routes
+
+**Status:** **implemented** for the two fixed delivery profiles; deployment controls and target-browser qualification remain.
+
+### Decision
+
+1. Offer two clearly disclosed AI-generated British command-style profiles. Male presentation uses OpenAI's built-in `cedar`; female presentation uses built-in `marin`. These are app-level delivery instructions over built-in voices, not recordings of a coach, cloned voices, or OpenAI Custom Voices.
+2. Do not create a Realtime connection until the user opts in. Visual text and direction icons continue independently of speech.
+3. Use `gpt-realtime-2.1` through OpenAI's unified WebRTC interface. The browser creates exactly one receive-only audio transceiver, no data channel, and no local track, then posts a bounded `application/sdp` offer to `POST /api/realtime-session?profile=...`. The standard `OPENAI_API_KEY` remains on the server. [Realtime WebRTC guide](https://developers.openai.com/api/docs/guides/realtime-webrtc)
+4. Configure output audio only, no tools, and a small output-token budget. Require a canonical OpenAI `Location` call ID, then return the SDP answer with a 15-minute HMAC capability bound to call ID, profile, pseudonymous client, and expiry. Reject unexpected methods, content types, origins, query parameters, extra media sections, non-receive-only audio, oversized/malformed bodies, invalid answers, and invalid/tampered/expired capabilities; responses use `Cache-Control: no-store`.
+5. The browser may send only `{ action: "speak", cueId }` or `{ action: "cancel" }` to `POST /api/realtime-cue`; it cannot send text, prompts, events, model settings, tools, or voice configuration. The trusted handler maps IDs to fixed text and uses OpenAI's [sideband control channel](https://developers.openai.com/api/docs/guides/realtime-server-controls) to cancel, clear, and create responses. Accept completion only after the matching response ID and output buffer terminal event.
+6. The visual classifier, frames, clips, images, and landmarks remain in the browser. Camera capture continues to request `audio: false`, and the deployment Permissions Policy keeps `microphone=()`.
+7. Derive `OpenAI-Safety-Identifier` as a stable HMAC of the forwarded client IP rather than forwarding the raw address as the identifier. Do not put the key, secret, capability, call ID, SDP body, cue text, IP, frame, or landmark in application logs; review provider-log access and retention separately.
+8. Close the old RTCPeerConnection/audio element and create a fresh session when the profile changes. OpenAI documents that a session's voice cannot change after it has emitted audio. [Realtime voice options](https://developers.openai.com/api/docs/guides/realtime-conversations#voice-options)
+9. On session, peer, sideband, capability, response, timeout, or rate-limit failure, close owned Realtime resources and use an available local English device voice for the same fixed cue. If none is available, remain visual-only. Device fallback voice, accent, timing, and OS/browser privacy behaviour may vary and must not be described as `cedar` or `marin`.
+
+### Abuse and deployment controls
+
+- Publish Vercel WAF fixed-window rules for `/api/realtime-session` (**12 requests per 600 seconds per IP**) and `/api/realtime-cue` (**120 requests per 600 seconds per IP**). Verify both on Preview and Production; this is deployment state outside the repository. [Vercel WAF rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
+- Current deployment state: the session rule is live, but Vercel rejected the additional cue rule because rate-limit changes are unavailable on the project's present plan. Do not call this gate complete until the plan supports it or an equivalent durable limiter is deployed.
+- Retain process-local best-effort guards of **6 session attempts** and **24 cue commands per minute per client**, each with **2 concurrent requests**, keyed internally by a privacy-safe HMAC. Serverless instances do not share that memory, so this is defence in depth rather than a durable quota.
+- Scope `OPENAI_API_KEY` separately to Vercel Preview and Production, use separate project keys where practical, set a project usage budget/alerts, and rotate by updating Preview and smoke-testing before Production. Revoke immediately on suspected exposure. [Vercel environment variables](https://vercel.com/docs/environment-variables)
+- Treat a missing key or revoked key as an expected degraded mode: return a generic no-store error and preserve device/visual fallback without revealing configuration.
+
+### Voice identity boundary
+
+OpenAI recommends `marin` and `cedar` among its built-in voices and requires clear disclosure that generated speech is AI. True OpenAI Custom Voices are a separate feature for eligible customers and require an actor's approved consent recording plus a matching sample recording. This app does not create or use them. [Text-to-speech and Custom Voices](https://developers.openai.com/api/docs/guides/text-to-speech#custom-voices)
+
+### Qualification gates
+
+- unit tests for profile IDs, server-owned fixed message mapping, arbitrary-text/event refusal, SDP/body/origin/query validation, capability signature/expiry/client binding, response-ID-correlated drain, upstream/sideband timeout and error mapping, safety-ID privacy, app limiting, fresh-session switching, fallback, and cleanup;
+- manual local, Vercel Preview, and Production checks for both profiles, AI disclosure, no microphone prompt/track, exact cue output, first-audio latency, fresh-session profile switching, pause cancellation, hidden/end teardown, offline/`429` failure, and screen-reader coexistence;
+- controlled tests of both firewall paths, proving their 12-session and 120-cue thresholds reject the next request and recover after the fixed window;
+- browser network inspection confirming no image, video, frame, clip, or landmark leaves the device and application logs contain none of the prohibited fields;
+- documented key and HMAC-secret rotation, rollback, provider-incident, cost-alert, and emergency-revocation drills.
+
 ## Runtime choices
 
 | Runtime/model | Delivery state | Decision and promotion requirement |
@@ -159,6 +225,8 @@ Feature-detect capabilities; do not choose a path from the user-agent string.
 | Capability | Preferred path | Fallback |
 | --- | --- | --- |
 | Camera | HTTPS `getUserMedia()`, requested only after a user action, `audio: false`; use actual track settings returned by the browser. | Explain permission/security failure and support prerecorded regression clips in development only. Camera capture is personally identifying and requires explicit consent. [Media Capture specification](https://www.w3.org/TR/mediacapture-streams/) |
+| Camera view | Full-frame `contain` presentation, native-preferred 4:3 Room view, conditional mirroring, post-permission device picker, and optional confirmed minimum zoom. | Selfie/single-camera fallback; visual setup remains usable if enumeration, `resizeMode`, zoom, or `devicechange` is absent. |
+| Voice framing | Explicit opt-in, fixed messages only, `gpt-realtime-2.1` receive-only WebRTC with signed same-origin cue/sideband control, and the selected built-in `cedar` or `marin` delivery profile. | Available local English device voice for the same fixed phrase, otherwise persistent visual text/arrows; never microphone or speech recognition. |
 | Frame callback | `requestVideoFrameCallback()` with `metadata.mediaTime`. Add metadata-derived capture/presentation and dropped-frame telemetry when qualified. | Current `requestAnimationFrame()` compatibility loop: its callback timestamp for live input, advancing `video.currentTime` for clip input, and the same Worker/backpressure rule. |
 | Inference | Exact-pinned MediaPipe 0.10.35 Full with GPU/WebGL delegate in the module Worker. | The same pinned Full model on CPU in the Worker; disable live analysis if it misses the performance gate. MediaPipe 1.0.1 and Lite/Heavy tiering require separate qualification. |
 | Frame transport | One transferable `ImageBitmap` in flight; skip callbacks while busy and close the bitmap in the Worker. | A qualified worker-compatible image source with the same one-in-flight/no-pending bound. |
@@ -200,7 +268,7 @@ Generic pose benchmarks cannot replace this dataset. In a 2026 Vicon exercise co
 | Functional | rep-count precision/recall/F1; phase confusion matrix; calibration success/retry rate; session-reset correctness. |
 | Coaching | per-cue precision, recall, specificity, false-clean rate, coach agreement, confidence calibration, abstention coverage and risk. Validate every cue separately. |
 | Robustness | results under cropping, blur, poor light, loose clothing, partial occlusion, mirrored feeds, device rotation, 30/60 FPS, and CPU/GPU fallbacks. |
-| Privacy | raw-frame persistence checks; third-party network requests; camera track shutdown; deletion/export behavior; logs/crashes inspected for frames, landmarks, and session identifiers. |
+| Privacy | raw-frame persistence; third-party network requests; camera track shutdown; voice opt-in timing; outbound cue allowlist; absence of microphone/video/landmark transfer; session teardown; firewall/app limits; logs/crashes inspected for keys, SDP, cue text, IPs, frames, landmarks, and session identifiers. |
 
 ### Proposed engineering targets
 
@@ -223,6 +291,7 @@ These are **Targets**, not research-derived safety thresholds:
 - Schedule with `requestVideoFrameCallback()` and transfer at most one `ImageBitmap`; skip frames while busy and close each bitmap in the Worker.
 - Keep calibration and the lightweight/pure `SwingAnalyzer` on the main thread.
 - Exact-pin Vite 8.1.5 and lazy-load the Three.js movement scene.
+- Keep visual framing on-device and independent; render only fixed opt-in cues through receive-only `gpt-realtime-2.1` WebRTC and trusted sideband control, with local English device speech or visual-only fallback.
 - Establish Vitest/application tests and analyzer coverage thresholds.
 
 **Exit:** **complete in the repository.** This is the baseline every subsequent phase must preserve or deliberately supersede through qualification.
@@ -244,6 +313,7 @@ These are **Targets**, not research-derived safety thresholds:
 - Keep clinical/rehab modes absent, restrict the shipped protocol, and add persistence/refractory behavior to the current one-cue presentation.
 - Self-host runtime/model assets; verify the implemented end/unmount track shutdown and add background/permission-revocation handling; retain no raw frames by default.
 - Audit MediaPipe metric egress and either obtain required consent or select a verified telemetry-free path. MediaPipe says input is processed locally but performance/utilization metrics are sent to Google. [Official privacy notice](https://github.com/google-ai-edge/mediapipe#privacy-notice)
+- Qualify the output-only voice boundary, publish the 12-requests/600-seconds/IP Vercel WAF rule, verify the 6/minute/IP and 2-concurrent/IP best-effort application guard, and exercise Preview/Production key rotation plus visual/device fallback.
 
 **Exit:** low-quality or unsupported motion cannot receive a positive score; network and camera-lifecycle tests pass; user-facing claims match the measurement limits.
 
@@ -288,6 +358,12 @@ These are **Targets**, not research-derived safety thresholds:
 - [Official BlazePose GHUM model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf)
 - [Media Capture and Streams](https://www.w3.org/TR/mediacapture-streams/)
 - [WebCodecs](https://www.w3.org/TR/webcodecs/)
+- [OpenAI Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc)
+- [`gpt-realtime-2.1` model](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)
+- [OpenAI Realtime voice options](https://developers.openai.com/api/docs/guides/realtime-conversations#voice-options)
+- [OpenAI built-in and Custom Voices](https://developers.openai.com/api/docs/guides/text-to-speech#custom-voices)
+- [Vercel environment variables](https://vercel.com/docs/environment-variables)
+- [Vercel WAF rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)
 - [ONNX Runtime Web performance guidance](https://onnxruntime.ai/docs/tutorials/web/performance-diagnosis.html)
 - [RTMPose paper](https://arxiv.org/abs/2303.07399)
 - [Official MMPose RTMPose project](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose)

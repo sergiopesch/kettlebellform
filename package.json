@@ -18,6 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:realtime:live": "node scripts/live-realtime-smoke.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build:verify"
   },
@@ -28,10 +30,12 @@
     "lucide-react": "1.26.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "three": "0.185.1"
+    "three": "0.185.1",
+    "ws": "8.21.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.0",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
@@ -39,6 +43,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/three": "0.185.1",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.4",
     "@vitest/coverage-v8": "4.1.9",
     "eslint": "10.7.0",

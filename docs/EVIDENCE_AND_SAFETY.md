@@ -1,6 +1,6 @@
 # Evidence and Safety Specification
 
-**Evidence reviewed through 31 July 2026.** This document defines the evidence and safety boundary for the first consumer-camera release. It is a product specification, not medical advice or a substitute for market-specific clinical, regulatory, privacy, or legal review.
+**Evidence reviewed through 1 August 2026.** This document defines the evidence and safety boundary for the first consumer-camera release. It is a product specification, not medical advice or a substitute for market-specific clinical, regulatory, privacy, or legal review.
 
 Labels used below:
 
@@ -140,15 +140,27 @@ Privacy defaults:
 
 - Process live camera frames and selected clips on-device and ephemerally. The current clip workflow does not upload, retain, transcode, or add the source or derived results to analytics. **[Engineering inference]**
 - Crop or ignore faces, do not record audio, and never use face or gait for identity.
+- Keep spoken framing explicitly opt-in and synthesis-only. The primary path renders allowlisted fixed phrases with `gpt-realtime-2.1` over receive-only WebRTC; it requests no microphone, attaches no camera or video track, and sends no frame, clip, image, or landmark. A browser-reported local English system voice may read the same fixed phrase after a Realtime failure, but availability, sound, and OS/browser privacy behaviour vary. Never fall back to speech recognition or attach user audio.
 - Do not persist derived metrics unless a future user-facing feature has a defined purpose, retention period, and consent basis.
 - Require separate, granular opt-in consent for support uploads, research, or model improvement.
 - Any future persistence or transfer requires export and deletion controls, a retention schedule, encryption, and a data-protection impact assessment where risk is high.
+
+### AI voice transfer boundary
+
+The visual framing classifier and movement analyzer remain on-device. Before speech opt-in, no OpenAI Realtime session exists. After opt-in, the browser sends only audio-only WebRTC/session negotiation, a signed short-lived capability, and allowlisted cue IDs to the same-origin server. The trusted server maps IDs to fixed text and controls OpenAI through a sideband WebSocket; OpenAI returns generated audio. Network providers necessarily observe ordinary connection metadata, so this must not be described as an offline feature.
+
+The two product profiles are AI-generated British command-style presentations over OpenAI built-in voices: male presentation uses `cedar`, and female presentation uses `marin`. They must be disclosed as AI-generated and must not be marketed as recordings of a coach, voice clones, or custom voices. OpenAI's [Text-to-speech guide](https://developers.openai.com/api/docs/guides/text-to-speech) requires clear disclosure that generated speech is AI rather than a human voice.
+
+OpenAI Custom Voices are a separate capability limited to eligible customers. Creating one requires both an approved recording of the actor giving consent and a matching sample recording from that actor; the built-in `cedar`/`marin` profiles in this app do not use that capability. See the official [Custom Voices requirements](https://developers.openai.com/api/docs/guides/text-to-speech#custom-voices).
+
+Operational controls are part of the privacy boundary: the standard API key remains server-only; the browser negotiates audio-only WebRTC through `/api/realtime-session` and has no Realtime event channel; the cue endpoint accepts only an exact ID with a capability bound to call, profile, pseudonymous client, and a 15-minute expiry; only the server constructs OpenAI events and cue text; responses are not cached; switching voice starts a fresh session; and failures preserve visual guidance, with variable device speech only as a fallback. Production and Preview must enforce Vercel fixed-window IP rules of 12 session requests and 120 cue requests per 600 seconds, in addition to process-local best-effort limits of 6 sessions and 24 cues per minute with 2 concurrent requests. The session rule is live; adding the cue rule was rejected by the current Vercel plan, so deployment hardening remains incomplete until rate limiting is enabled or an equivalent durable control is added. Application logs must not retain API keys, session capabilities, call IDs, SDP bodies, cue contents, source IP addresses, frames, or landmarks; provider logs require a documented access and retention review.
 
 An image is not automatically special-category biometric data under UK GDPR, but technical processing for unique identification is. Pain, medical-screening answers, and inferred health status may be special-category health data. Ephemeral processing is still processing ([ICO special-category data](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/lawful-basis/special-category-data/what-is-special-category-data/); [ICO privacy by design and default](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/accountability-and-governance/guide-to-accountability-and-governance/data-protection-by-design-and-by-default/)). The amended US [FTC Health Breach Notification Rule](https://www.ftc.gov/legal-library/browse/rules/health-breach-notification-rule) applies to many non-HIPAA consumer health apps and covers unauthorized disclosures as well as security breaches.
 
 Target [WCAG 2.2 AA](https://www.w3.org/TR/WCAG22/) and its [mobile/non-web applicability](https://www.w3.org/WAI/standards-guidelines/mobile/):
 
 - Provide text/captions plus visual and haptic equivalents for audio cues, and spoken alternatives for visual overlays.
+- Treat “position looks good” only as a stable framing state: it does not mean the room is safe, the bell is detected, or the swing is correct. Suppress automatic setup speech while a swing is in progress so it does not distract the athlete.
 - Do not convey meaning by colour alone; support scalable text, high contrast, screen readers, and reduced motion.
 - Provide large, accessible start/pause/stop controls; never require a camera gesture to operate the session.
 - Offer adjustable cue pace and volume and an accessible non-camera/manual-log mode.
@@ -163,12 +175,13 @@ No live-camera- or clip-derived claim ships without validation of the exact prod
 3. **Cue validity:** have qualified kettlebell and biomechanics experts predefine acceptable observations and review disagreements. Test whether each cue describes the recorded movement; do not equate agreement with injury prevention.
 4. **User effect:** prospectively test comprehension, behaviour change, adverse events, and comparison with no feedback and qualified coaching before making effectiveness or equivalence claims.
 5. **Subgroups and conditions:** report performance across age, sex/gender, skin tone, body size/proportions, clothing, disability/prosthesis, lighting, phone/camera hardware, handedness, bell mass, and intended style. Do not generalize beyond represented groups.
-6. **Release controls:** version models, data, thresholds, and cue text; stage rollouts; monitor drift and complaints; preserve rollback and an auditable model card/change log.
+6. **Release controls:** version models, data, thresholds, cue text, Realtime model, built-in voice IDs, and delivery instructions; stage rollouts; monitor drift and complaints; preserve rollback and an auditable model card/change log.
 7. **Clip-path equivalence:** test supported containers, codecs, rotations, resolutions, trim boundaries, spatial-coordinate mapping, cancellation, memory, and thermals. Compare clip and live-path results from the same source frames and verify that no media or derived result leaves the device.
+8. **Spoken framing:** test both AI-generated profiles and the device fallback for exact-cue adherence, disclosure, first-audio latency, cancellation, fresh-session switching, screen-reader coexistence, failure recovery, rate limiting, and the documented no-microphone/no-visual-data network boundary.
 
 Markerless measurement accuracy is task-, joint-, plane-, system-, and protocol-dependent. Recent reviews find promising reliability for some sagittal tasks but continuing accuracy and real-time-feedback gaps ([Yoma et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40526450/); [El-Rajab et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40416048/)). Dynamic-movement validation has reported sagittal errors of several degrees and much larger errors in some transverse-plane measures ([Edwards et al., 2025](https://pubmed.ncbi.nlm.nih.gov/39733226/)). Do not infer transverse rotation from monocular RGB or transfer validation from squats, jumps, or rehabilitation exercises to kettlebell swings.
 
-Use deterministic, versioned logic for cue eligibility and thresholds. A generative model may rephrase an approved cue but must not invent safety decisions, measurements, or thresholds. **[Engineering inference]** Apply the [NIST AI Risk Management Framework](https://www.nist.gov/publications/artificial-intelligence-risk-management-framework-ai-rmf-10) across governance, mapping, measurement, and ongoing risk management.
+Use deterministic, versioned logic for cue eligibility and thresholds. The speech model is an output renderer only: it must speak the exact approved fixed cue and must not rephrase it, add advice, or invent safety decisions, measurements, or thresholds. **[Engineering inference]** Apply the [NIST AI Risk Management Framework](https://www.nist.gov/publications/artificial-intelligence-risk-management-framework-ai-rmf-10) across governance, mapping, measurement, and ongoing risk management.
 
 ## Key evidence links
 

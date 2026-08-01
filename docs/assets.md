@@ -14,7 +14,7 @@ Paths:
 - `docs/screenshots/kb-form-clip-result.jpg`
 - `docs/screenshots/kb-form-clip-result-mobile.jpg`
 
-These are browser captures of the implemented setup, camera-free preview, local clip editor, on-device analysis, and fail-closed result states at desktop and mobile widths. The README uses the representative desktop views. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
+These are browser captures of the implemented setup, camera-free preview, local clip editor, on-device analysis, and fail-closed result states at desktop and mobile widths. The camera-setup captures were refreshed on 1 August 2026 and show the current full-frame Room/Selfie selection plus opt-in voice control. The README uses the representative desktop views. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
 
 ## Favicon
 

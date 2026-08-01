@@ -454,6 +454,198 @@ h2 {
   width: 14px;
 }
 
+.camera-preferences {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.62fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.voice-coach-control {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.voice-profile-picker {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.voice-profile-picker legend {
+  margin-bottom: 2px;
+  color: var(--subtle);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.camera-view-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.camera-select,
+.camera-select select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.camera-select select {
+  flex: 1 1 auto;
+}
+
+.camera-view-picker legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.camera-view-picker button,
+.voice-profile-picker button,
+.voice-coach-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  min-height: 64px;
+  padding: 10px 12px;
+  color: #b9c2ba;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: #101512;
+  text-align: left;
+  cursor: pointer;
+}
+
+.camera-view-picker button[aria-pressed="true"],
+.voice-profile-picker button[aria-pressed="true"],
+.voice-coach-toggle[aria-pressed="true"] {
+  color: var(--ink);
+  border-color: rgb(199 243 108 / 54%);
+  background: rgb(199 243 108 / 7%);
+  box-shadow: inset 0 0 0 1px rgb(199 243 108 / 9%);
+}
+
+.camera-view-picker button > svg,
+.voice-coach-toggle > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--accent);
+}
+
+.camera-view-picker button > span,
+.voice-profile-picker button > span,
+.voice-coach-toggle > span {
+  display: grid;
+  min-width: 0;
+}
+
+.camera-view-picker strong,
+.voice-profile-picker strong,
+.voice-coach-toggle strong {
+  color: inherit;
+  font-size: 0.72rem;
+}
+
+.camera-view-picker small,
+.voice-profile-picker small,
+.voice-coach-toggle small {
+  margin-top: 3px;
+  color: var(--subtle);
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+.camera-view-picker em {
+  align-self: flex-start;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 0.56rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.voice-coach-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.voice-profile-picker button {
+  min-height: 54px;
+  padding-block: 8px;
+}
+
+.voice-profile-picker button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.voice-coach-control > .voice-coach-toggle {
+  width: 100%;
+}
+
+.voice-ai-disclosure {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.59rem;
+  line-height: 1.45;
+}
+
+.voice-coach-control.is-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.voice-profile-select {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 44px;
+  min-width: 0;
+  padding: 0 10px;
+  color: #c6cec7;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-soft);
+  font-size: 0.67rem;
+}
+
+.voice-profile-select select {
+  min-width: 0;
+  max-width: 210px;
+  margin-left: auto;
+  color: var(--ink);
+  border: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.voice-coach-toggle.is-compact {
+  min-height: 44px;
+  padding-block: 7px;
+}
+
 .setup-actions {
   display: flex;
   gap: 10px;
@@ -765,10 +957,17 @@ h2 {
 
 .capture-media {
   position: relative;
-  min-height: calc(100svh - 160px);
-  max-height: 900px;
+  width: 100%;
+  min-height: 0;
+  aspect-ratio: 4 / 3;
   overflow: hidden;
   background: #060806;
+}
+
+.capture-media-demo {
+  min-height: calc(100svh - 160px);
+  max-height: 900px;
+  aspect-ratio: auto;
 }
 
 .camera-feed,
@@ -782,20 +981,20 @@ h2 {
 }
 
 .camera-feed,
-.demo-image {
-  object-fit: cover;
+.pose-overlay {
+  object-fit: contain;
 }
 
-.camera-feed {
+.camera-feed.is-mirrored {
   transform: scaleX(-1);
 }
 
 .demo-image {
+  object-fit: cover;
   object-position: center;
 }
 
 .pose-overlay {
-  object-fit: cover;
   pointer-events: none;
 }
 
@@ -895,7 +1094,8 @@ h2 {
 
 .pause-overlay,
 .tracking-hint,
-.calibration-overlay {
+.calibration-overlay,
+.framing-guidance {
   position: absolute;
   z-index: 6;
   top: 50%;
@@ -951,6 +1151,65 @@ h2 {
   color: var(--accent);
 }
 
+.framing-guidance {
+  top: auto;
+  bottom: 62px;
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  width: max-content;
+  max-width: calc(100% - 40px);
+  padding: 10px 13px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 9px;
+  background: rgb(8 11 9 / 86%);
+  backdrop-filter: blur(14px);
+}
+
+.framing-guidance[data-tone="ready"] {
+  border-color: rgb(199 243 108 / 54%);
+  background: rgb(22 32 18 / 88%);
+}
+
+.framing-guidance > svg {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  color: var(--accent);
+  transition: transform 180ms ease;
+}
+
+.framing-guidance[data-cue="move-left"] > svg {
+  transform: rotate(180deg);
+}
+
+.framing-guidance[data-cue="step-back"] > svg {
+  transform: rotate(90deg);
+}
+
+.framing-guidance[data-cue="move-closer"] > svg {
+  transform: rotate(-90deg);
+}
+
+.framing-guidance[data-cue="ready"] > svg {
+  transform: rotate(-45deg);
+}
+
+.framing-guidance > span {
+  display: grid;
+}
+
+.framing-guidance strong {
+  color: #eef4ec;
+  font-size: 0.7rem;
+}
+
+.framing-guidance small {
+  margin-top: 3px;
+  color: #a2aba3;
+  font-size: 0.61rem;
+}
+
 .calibration-overlay {
   top: auto;
   right: 20px;
@@ -1002,6 +1261,40 @@ h2 {
   min-height: 72px;
   padding: 10px 14px;
   border-top: 1px solid var(--line);
+}
+
+.capture-control-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.camera-select {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px;
+  color: #c6cec7;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--surface-soft);
+  font-size: 0.67rem;
+}
+
+.camera-select > svg {
+  width: 16px;
+  flex: 0 0 16px;
+  color: var(--accent);
+}
+
+.camera-select select {
+  max-width: 180px;
+  color: var(--ink);
+  border: 0;
+  background: transparent;
+  font-size: 0.67rem;
 }
 
 .capture-tools .button {
@@ -2024,6 +2317,10 @@ h2 {
     padding: 26px;
   }
 
+  .camera-preferences {
+    grid-template-columns: 1fr;
+  }
+
   .clip-editor-actions {
     flex-wrap: wrap;
   }
@@ -2088,7 +2385,7 @@ h2 {
     padding: 22px;
   }
 
-  .capture-media {
+  .capture-media-demo {
     min-height: min(72svh, 720px);
   }
 
@@ -2205,6 +2502,10 @@ h2 {
     flex-direction: column;
   }
 
+  .camera-view-picker {
+    grid-template-columns: 1fr;
+  }
+
   .setup-actions .button {
     width: 100%;
   }
@@ -2213,7 +2514,7 @@ h2 {
     align-items: flex-start;
   }
 
-  .capture-media {
+  .capture-media-demo {
     min-height: 68svh;
     max-height: 680px;
   }
@@ -2236,6 +2537,31 @@ h2 {
     align-items: stretch;
     flex-direction: column;
     padding: 12px;
+  }
+
+  .capture-control-group {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .capture-control-group > *,
+  .capture-control-group .button,
+  .capture-control-group .voice-coach-control,
+  .capture-control-group .voice-coach-toggle {
+    width: 100%;
+  }
+
+  .voice-coach-control.is-compact {
+    flex-direction: column;
+  }
+
+  .voice-profile-select select {
+    max-width: 100%;
+  }
+
+  .camera-select select {
+    max-width: 100%;
+    margin-left: auto;
   }
 
   .engine-readout {

@@ -963,6 +963,12 @@ describe("usePoseCoach clip analysis protocol", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000);
     });
+    expect(hook.result.current.clipBusy).toBe(true);
+    expect(firstWorker.terminate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
     await expect(firstOutcome).resolves.toMatchObject({
       message: expect.stringMatching(/pose engine.*stopped responding/i)
     });

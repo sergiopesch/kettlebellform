@@ -15,15 +15,24 @@ import {
   Pause,
   Play,
   RotateCcw,
+  ScanLine,
   Settings,
   ShieldCheck,
   Square,
-  Target,
   Timer,
+  Volume2,
+  VolumeX,
   X
 } from "lucide-react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { usePoseCoach } from "./hooks/usePoseCoach";
+import { usePoseCoach, type CameraFacingMode } from "./hooks/usePoseCoach";
+import { useSpokenFramingCoach } from "./hooks/useSpokenFramingCoach";
+import {
+  COACH_VOICE_PROFILES,
+  getCoachVoiceProfile,
+  type VoiceProfileId
+} from "./lib/coachVoiceProfiles";
+import { getFramingCue } from "./lib/framingCoach";
 import type {
   AnalysisFrame,
   AnatomyLayerId,
@@ -99,13 +108,42 @@ export default function App() {
   const requestingCamera = coach.mode === "requesting";
   const paused = coach.mode === "paused";
   const demo = coach.source === "demo";
+  const framingCue = useMemo(
+    () => getFramingCue(coach.analysis?.landmarks, {
+      mirrored: coach.cameraOptics?.mirrored ?? false,
+      aspectRatio: coach.cameraOptics?.aspectRatio,
+      requireSideView: settings.sideView
+    }),
+    [
+      coach.analysis?.landmarks,
+      coach.cameraOptics?.aspectRatio,
+      coach.cameraOptics?.mirrored,
+      settings.sideView
+    ]
+  );
+  const voiceCoach = useSpokenFramingCoach({
+    cue: framingCue,
+    sessionActive: coach.source !== null,
+    motionActive:
+      coach.source === "camera" &&
+      coach.analysis !== null &&
+      coach.analysis.phase !== "waiting",
+    automatic:
+      coach.source === "camera" &&
+      coach.mode === "live" &&
+      !coach.isCalibrating
+  });
+  const disableVoiceCoach = voiceCoach.disable;
 
   useEffect(() => {
     if (coach.source !== previousSourceRef.current) {
+      if (previousSourceRef.current && !coach.source) {
+        disableVoiceCoach();
+      }
       previousSourceRef.current = coach.source;
       setElapsedSeconds(coach.source === "demo" ? 102 : 0);
     }
-  }, [coach.source]);
+  }, [coach.source, disableVoiceCoach]);
 
   useEffect(() => {
     if (!sessionActive || paused) {
@@ -215,6 +253,7 @@ export default function App() {
         ) : sessionActive ? (
           <LiveWorkspace
             coach={coach}
+            voiceCoach={voiceCoach}
             attachVideo={coach.attachVideo}
             attachOverlay={coach.attachOverlay}
             demo={demo}
@@ -227,6 +266,7 @@ export default function App() {
         ) : (
           <ReadyWorkspace
             coach={coach}
+            voiceCoach={voiceCoach}
             settings={settings}
             setSettings={setSettings}
             movementOpen={movementOpen}
@@ -251,9 +291,11 @@ export default function App() {
 }
 
 type CoachController = ReturnType<typeof usePoseCoach>;
+type VoiceCoachController = ReturnType<typeof useSpokenFramingCoach>;
 
 function ReadyWorkspace({
   coach,
+  voiceCoach,
   settings,
   setSettings,
   movementOpen,
@@ -262,6 +304,7 @@ function ReadyWorkspace({
   onOpenClip
 }: {
   coach: CoachController;
+  voiceCoach: VoiceCoachController;
   settings: CoachSettings;
   setSettings: React.Dispatch<React.SetStateAction<CoachSettings>>;
   movementOpen: boolean;
@@ -270,6 +313,7 @@ function ReadyWorkspace({
   onOpenClip: () => void;
 }) {
   const requesting = coach.mode === "requesting";
+  const [cameraFacingMode, setCameraFacingMode] = useState<CameraFacingMode>("environment");
 
   return (
     <div className="ready-layout">
@@ -290,15 +334,46 @@ function ReadyWorkspace({
           <img className="framing-reference" src="/demo-swing.png" alt="" />
           <div className="distance-chip">
             <ArrowRight aria-hidden="true" />
-            <span>Place your device 2–3 m away</span>
+            <span>Fill about 55–80% of the full frame</span>
           </div>
+        </div>
+
+        <div className="camera-preferences">
+          <fieldset className="camera-view-picker">
+            <legend>Camera view</legend>
+            <button
+              type="button"
+              aria-pressed={cameraFacingMode === "environment"}
+              onClick={() => setCameraFacingMode("environment")}
+            >
+              <ScanLine aria-hidden="true" />
+              <span>
+                <strong>Room view</strong>
+                <small>Environment-facing when supported</small>
+              </span>
+              <em>Recommended</em>
+            </button>
+            <button
+              type="button"
+              aria-pressed={cameraFacingMode === "user"}
+              onClick={() => setCameraFacingMode("user")}
+            >
+              <Camera aria-hidden="true" />
+              <span>
+                <strong>Selfie view</strong>
+                <small>Keep the screen facing you</small>
+              </span>
+            </button>
+          </fieldset>
+
+          <VoiceCoachToggle voiceCoach={voiceCoach} compact={false} />
         </div>
 
         <div className="setup-actions">
           <button
             className="button button-primary"
             type="button"
-            onClick={coach.startCamera}
+            onClick={() => coach.startCamera(cameraFacingMode)}
             disabled={coach.modelStatus !== "ready" || requesting}
           >
             <Camera aria-hidden="true" />
@@ -316,7 +391,11 @@ function ReadyWorkspace({
 
         <div className="privacy-line">
           <LockKeyhole aria-hidden="true" />
-          <span>Video frames stay in this browser and are not stored or uploaded by KB FORM.</span>
+          <span>
+            Pose video stays in this browser. If voice is on, the browser sends only an
+            allowlisted cue ID to our server; OpenAI receives its matching fixed phrase. Never
+            microphone audio, camera frames, or landmarks.
+          </span>
         </div>
 
         {coach.modelError || coach.cameraError ? (
@@ -324,6 +403,9 @@ function ReadyWorkspace({
             <CircleAlert aria-hidden="true" />
             <span>{coach.cameraError || coach.modelError}</span>
           </div>
+        ) : null}
+        {voiceCoach.speechStatus ? (
+          <p className="inline-status" role="status">{voiceCoach.speechStatus}</p>
         ) : null}
       </section>
 
@@ -366,6 +448,7 @@ function ReadyWorkspace({
 
 function LiveWorkspace({
   coach,
+  voiceCoach,
   attachVideo,
   attachOverlay,
   demo,
@@ -376,6 +459,7 @@ function LiveWorkspace({
   setAnatomyLayers
 }: {
   coach: CoachController;
+  voiceCoach: VoiceCoachController;
   attachVideo: CoachController["attachVideo"];
   attachOverlay: CoachController["attachOverlay"];
   demo: boolean;
@@ -392,15 +476,26 @@ function LiveWorkspace({
   const quality = getViewQuality(coach.analysis, demo);
   const signals = getSignals(coach.analysis, demo, assessed);
   const recentReps = demo ? [0.78, 0.84, 0.75, 0.9, 0.86] : [];
+  const cameraOptions = coach.cameraOptions ?? [];
+  const cameraAspectRatio = coach.cameraOptics?.aspectRatio;
+  const captureStyle = !demo && cameraAspectRatio
+    ? { aspectRatio: String(cameraAspectRatio) }
+    : undefined;
 
   return (
     <div className="live-layout">
       <section className="capture-card" aria-label={demo ? "Interactive coaching preview" : "Live camera analysis"}>
-        <div className="capture-media">
+        <div className={`capture-media${demo ? " capture-media-demo" : ""}`} style={captureStyle}>
           {demo ? (
             <img className="demo-image" src="/demo-swing-overlay.png" alt="Side-view demonstration of a two-hand shoulder-height kettlebell swing with a pose-tracking overlay" />
           ) : (
-            <video ref={attachVideo} className="camera-feed" playsInline muted aria-label="Mirrored live camera feed" />
+            <video
+              ref={attachVideo}
+              className={`camera-feed${coach.cameraOptics?.mirrored ? " is-mirrored" : ""}`}
+              playsInline
+              muted
+              aria-label={coach.cameraOptics?.mirrored ? "Mirrored live camera feed" : "Live camera feed"}
+            />
           )}
           {!demo ? <canvas ref={attachOverlay} className="pose-overlay" aria-label="Pose tracking overlay" /> : null}
 
@@ -422,7 +517,7 @@ function LiveWorkspace({
             </div>
             <div>
               <LockKeyhole aria-hidden="true" />
-              <span>{demo ? "Interactive sample · no camera" : "On-device · not recorded by KB FORM"}</span>
+              <span>{demo ? "Interactive sample · no camera" : "Pose analysis on-device · not recorded"}</span>
             </div>
           </div>
 
@@ -439,10 +534,26 @@ function LiveWorkspace({
               <Camera aria-hidden="true" />
               <span>Allow camera access to begin on-device coaching.</span>
             </div>
-          ) : !demo && !coach.analysis && coach.mode !== "paused" ? (
-            <div className="tracking-hint" role="status" aria-live="polite">
-              <Target aria-hidden="true" />
-              <span>Move side-on until your full body is visible.</span>
+          ) : !demo && coach.mode !== "paused" && !coach.isCalibrating ? (
+            <div
+              className="framing-guidance"
+              data-tone={voiceCoach.stableCue.tone}
+              data-cue={voiceCoach.stableCue.id}
+              role="status"
+              aria-live="polite"
+            >
+              {voiceCoach.stableCue.id === "move-left" ||
+              voiceCoach.stableCue.id === "move-right" ||
+              voiceCoach.stableCue.id === "step-back" ||
+              voiceCoach.stableCue.id === "move-closer" ? (
+                <ArrowRight aria-hidden="true" />
+              ) : (
+                <ScanLine aria-hidden="true" />
+              )}
+              <span>
+                <strong>{voiceCoach.stableCue.label}</strong>
+                <small>{voiceCoach.stableCue.detail}</small>
+              </span>
             </div>
           ) : null}
 
@@ -475,18 +586,80 @@ function LiveWorkspace({
 
         {!demo && coach.mode !== "requesting" ? (
           <div className="capture-tools">
-            <button className="button button-secondary" type="button" onClick={coach.startCalibration} disabled={coach.mode !== "live" || coach.isCalibrating}>
-              <Gauge aria-hidden="true" />
-              <span>{coach.calibration ? "Refresh upright reference" : "Set upright reference"}</span>
-            </button>
+            <div className="capture-control-group">
+              <button className="button button-secondary" type="button" onClick={coach.startCalibration} disabled={coach.mode !== "live" || coach.isCalibrating}>
+                <Gauge aria-hidden="true" />
+                <span>{coach.calibration ? "Refresh upright reference" : "Set upright reference"}</span>
+              </button>
+              {cameraOptions.length > 1 ? (
+                <label className="camera-select">
+                  <ScanLine aria-hidden="true" />
+                  <span>Camera</span>
+                  <select
+                    value={coach.activeCameraId ?? ""}
+                    onChange={(event) => coach.selectCamera(event.target.value)}
+                    disabled={coach.mode !== "live"}
+                  >
+                    {!coach.activeCameraId ? <option value="">Current camera</option> : null}
+                    {cameraOptions.map((camera) => (
+                      <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {cameraOptions.length > 0 ? (
+                <button
+                  className="button button-icon icon-only"
+                  type="button"
+                  aria-label="Refresh camera list"
+                  onClick={coach.refreshCameraOptions}
+                  disabled={coach.mode !== "live"}
+                >
+                  <RotateCcw aria-hidden="true" />
+                </button>
+              ) : null}
+              {coach.cameraOptics ? (
+                <button
+                  className="button button-quiet"
+                  type="button"
+                  aria-label="Mirror camera preview"
+                  aria-pressed={coach.cameraOptics.mirrored}
+                  onClick={coach.toggleCameraMirror}
+                  disabled={coach.mode !== "live"}
+                  title={coach.cameraOptics.mirroringKnown
+                    ? "Change how the preview is displayed."
+                    : "This camera did not report its direction. Toggle this if left and right feel reversed."}
+                >
+                  <ScanLine aria-hidden="true" />
+                  <span>Mirror preview</span>
+                </button>
+              ) : null}
+              <VoiceCoachToggle voiceCoach={voiceCoach} compact />
+              {voiceCoach.enabled ? (
+                <button
+                  className="button button-quiet"
+                  type="button"
+                  onClick={voiceCoach.repeat}
+                  disabled={!voiceCoach.canRepeat}
+                >
+                  <Volume2 aria-hidden="true" />
+                  <span>Repeat cue</span>
+                </button>
+              ) : null}
+            </div>
             <div className="engine-readout" aria-label="Pose engine performance">
               <Activity aria-hidden="true" />
-              <span>{coach.inferenceMs ? `${Math.round(coach.inferenceMs)} ms inference` : "Waiting for pose"}</span>
+              <span>
+                {coach.inferenceMs ? `${Math.round(coach.inferenceMs)} ms` : "Waiting for pose"}
+                {" · Full frame"}
+                {coach.cameraOptics?.minimumZoomApplied ? " · minimum zoom" : ""}
+              </span>
             </div>
           </div>
         ) : null}
 
         {coach.calibrationMessage ? <p className="inline-status" role="status">{coach.calibrationMessage}</p> : null}
+        {voiceCoach.speechStatus ? <p className="inline-status" role="status">{voiceCoach.speechStatus}</p> : null}
       </section>
 
       <aside className="coach-rail" aria-label="Coaching feedback">
@@ -707,11 +880,108 @@ function SettingsDrawer({
           ) : null}
         </section>
 
+        <section className="settings-section">
+          <span className="eyebrow">Voice framing</span>
+          <strong>Two AI command profiles · no microphone</strong>
+          <p>
+            After you opt in, the browser sends only an allowlisted cue ID to our server and
+            OpenAI Realtime receives its matching positioning phrase. Camera frames, landmarks,
+            and microphone audio are never sent. If Realtime fails, KB FORM uses a local English
+            device voice when available, then falls back to visual cues.
+          </p>
+        </section>
+
         <div className="notice notice-safety compact">
           <ShieldCheck aria-hidden="true" />
           <p>KB FORM is a general-wellness technique aid. It does not diagnose, treat, prevent injury, or replace a qualified professional.</p>
         </div>
       </aside>
+    </div>
+  );
+}
+
+function VoiceCoachToggle({
+  voiceCoach,
+  compact
+}: {
+  voiceCoach: VoiceCoachController;
+  compact: boolean;
+}) {
+  const activeProfile = getCoachVoiceProfile(voiceCoach.selectedProfile);
+  const connecting = voiceCoach.transport === "connecting";
+  const detail = connecting
+    ? "Connecting securely to OpenAI Realtime…"
+    : voiceCoach.availability === "loading"
+      ? "Finding a compatible voice…"
+    : voiceCoach.availability === "unavailable"
+      ? "Voice unavailable · visual cues stay active"
+      : voiceCoach.enabled && voiceCoach.transport === "realtime"
+        ? `On · ${activeProfile.label} · OpenAI Realtime`
+        : voiceCoach.enabled && voiceCoach.transport === "device"
+          ? "On · private device fallback · tone may vary"
+          : "Off · no microphone access";
+
+  const chooseProfile = (profile: VoiceProfileId) => {
+    voiceCoach.selectProfile(profile);
+  };
+
+  return (
+    <div className={`voice-coach-control${compact ? " is-compact" : ""}`}>
+      {compact ? (
+        <label className="voice-profile-select">
+          <span>Coach voice</span>
+          <select
+            aria-label="Coach voice"
+            value={voiceCoach.selectedProfile}
+            disabled={connecting}
+            onChange={(event) => chooseProfile(event.target.value as VoiceProfileId)}
+          >
+            {COACH_VOICE_PROFILES.map((profile) => (
+              <option key={profile.id} value={profile.id}>{profile.label}</option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <fieldset className="voice-profile-picker">
+          <legend>Choose an AI coach voice</legend>
+          {COACH_VOICE_PROFILES.map((profile) => (
+            <button
+              key={profile.id}
+              type="button"
+              aria-label={profile.accessibleLabel}
+              aria-pressed={voiceCoach.selectedProfile === profile.id}
+              disabled={connecting}
+              onClick={() => chooseProfile(profile.id)}
+            >
+              <span>
+                <strong>{profile.label}</strong>
+                <small>{profile.description}</small>
+              </span>
+            </button>
+          ))}
+        </fieldset>
+      )}
+
+      <button
+        className={`voice-coach-toggle${compact ? " is-compact" : ""}`}
+        type="button"
+        aria-pressed={voiceCoach.enabled}
+        aria-busy={connecting}
+        disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}
+        onClick={voiceCoach.toggle}
+      >
+        {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
+        <span>
+          <strong>{connecting ? "Connecting voice coach" : "Voice framing coach"}</strong>
+          <small>{detail}</small>
+        </span>
+      </button>
+
+      {!compact ? (
+        <p className="voice-ai-disclosure">
+          AI-generated speech, not a human coach recording. Only fixed framing text is sent when on.
+        </p>
+      ) : null}
     </div>
   );
 }

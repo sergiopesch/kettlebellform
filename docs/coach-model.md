@@ -43,6 +43,26 @@ These values are **capture-quality heuristics**, not universal technique or safe
 
 An accepted profile stores medians for upright hip angle, knee angle, and gross torso lean, plus reference proportions, average visibility, and jitter. Saving or clearing a reference resets the in-flight analyzer state.
 
+## Framing coach
+
+Framing guidance is separate from swing assessment and never changes rep metrics. It reads the rate-limited normalized landmark output, transforms horizontal coordinates to match the displayed preview, and uses a visible head plus bilateral shoulder, hip, knee, wrist, ankle, and toe anchors. Current setup heuristics ask the user to:
+
+- step into view when a stable core is unavailable;
+- use a neutral “show your full body” cue when any required bilateral shoulder, hip, knee, wrist, ankle, or toe evidence is missing, because distance and readiness are ambiguous;
+- step away when the observed landmark envelope touches an edge, or visible body height exceeds 80% of the frame;
+- move closer when visible body height is below 55% of the frame;
+- move left/right in the displayed frame when torso centre leaves the 37–63% horizontal region;
+- turn side-on when aspect-corrected shoulder width relative to visible body height exceeds the side-view gate, or shoulder evidence is too uncertain to verify orientation;
+- hold position only after the full framing sequence is satisfied.
+
+These are presentation heuristics, not camera-distance measurements. A “position looks good” state means only that the tracked body occupies the intended image region; it cannot establish clear floor space, bell visibility, safe loading, or correct technique.
+
+Visual state is always present. Optional speech requires correction states to remain stable for 800 ms and ready/finding states for 1,200 ms, enforces at least three seconds between different announcements, and repeats an unresolved correction no more than once every seven seconds. Automatic speech is disabled during active swing phases, for four seconds after recent movement or a tracking dropout, and during calibration, demo, pause, hidden-page, and ended-session states.
+
+After explicit opt-in, the primary speech path uses `gpt-realtime-2.1` as an output-only renderer over receive-only WebRTC. The browser has no Realtime data channel and can send only a validated message ID to the same-origin cue endpoint. A short-lived signed capability binds that request to the call, profile, pseudonymous client, and expiry; the trusted server maps the ID to exact allowlisted text and constructs every OpenAI sideband event. No analyzer-generated or browser-supplied free text is eligible. The male-presentation British command profile uses the built-in `cedar` voice and the female-presentation British command profile uses built-in `marin`. Both are disclosed as AI-generated delivery profiles. They are not recordings of a coach, cloned voices, or custom voices.
+
+The Realtime peer has no microphone, input-audio, camera, or video track. The pose stream remains on-device: neither video frames nor landmarks are included in voice messages. Changing profile closes the old peer and starts a fresh session because a Realtime voice is immutable after the session has produced audio. Realtime failure preserves visual guidance and may fall back to a browser-reported local English system voice reading the same fixed phrase. Device fallback availability, accent, presentation, and timing vary by browser and operating system; speech recognition never participates.
+
 ## Assessability and abstention
 
 The analyzer must be able to abstain. A frame is eligible for tracking only when:
@@ -128,5 +148,9 @@ The optional body, muscle, skeleton, and trail layers are illustrative rendering
 - Analyzer: [`src/lib/swingAnalyzer.ts`](../src/lib/swingAnalyzer.ts)
 - Capture and calibration lifecycle: [`src/hooks/usePoseCoach.ts`](../src/hooks/usePoseCoach.ts)
 - UI abstention and cue presentation: [`src/App.tsx`](../src/App.tsx)
+- Fixed spoken messages and AI-generated delivery profiles: [`src/lib/coachVoiceProfiles.ts`](../src/lib/coachVoiceProfiles.ts)
+- Realtime and device-fallback lifecycle: [`src/hooks/useSpokenFramingCoach.ts`](../src/hooks/useSpokenFramingCoach.ts)
+- Same-origin unified WebRTC session handler: [`server/realtimeSession.ts`](../server/realtimeSession.ts)
+- Signed capability and trusted sideband cue handler: [`server/realtimeSessionToken.ts`](../server/realtimeSessionToken.ts), [`server/realtimeCue.ts`](../server/realtimeCue.ts)
 - Tests for fail-closed calibration, ordered reps, gaps, and sentinel output: [`src/lib/__tests__/swingAnalyzer.test.ts`](../src/lib/__tests__/swingAnalyzer.test.ts)
 - Evidence, claims, validation, privacy, and accessibility boundary: [Evidence and Safety Specification](./EVIDENCE_AND_SAFETY.md)

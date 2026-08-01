@@ -106,7 +106,7 @@ function drawFramingGuide(context: CanvasRenderingContext2D, width: number, heig
   context.strokeStyle = "rgba(255,255,255,0.25)";
   context.lineWidth = 2;
   context.setLineDash([10, 12]);
-  context.strokeRect(width * 0.18, height * 0.06, width * 0.64, height * 0.88);
+  context.strokeRect(width * 0.07, height * 0.06, width * 0.86, height * 0.88);
   context.restore();
 }
 

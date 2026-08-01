@@ -152,6 +152,11 @@ const vercel = JSON.parse(await readFile(resolve("vercel.json"), "utf8"));
 if (vercel.outputDirectory !== "dist" || vercel.rewrites?.[0]?.destination !== "/index.html") {
   fail("vercel.json must publish dist and retain the SPA fallback.");
 }
+for (const functionPath of ["api/realtime-session.ts", "api/realtime-cue.ts"]) {
+  if (vercel.functions?.[functionPath]?.maxDuration !== 15) {
+    fail(`vercel.json must retain the bounded duration for ${functionPath}.`);
+  }
+}
 
 const globalVercelHeaders = vercel.headers?.find(({ source }) => source === "/(.*)")?.headers;
 if (!Array.isArray(globalVercelHeaders)) {

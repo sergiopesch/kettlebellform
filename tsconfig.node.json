@@ -8,8 +8,13 @@
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "noEmit": true,
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": [
+    "vite.config.ts",
+    "api/**/*.ts",
+    "server/**/*.ts",
+    "src/lib/coachVoicePolicy.ts"
+  ]
 }

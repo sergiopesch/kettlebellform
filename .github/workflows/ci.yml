@@ -36,8 +36,14 @@ jobs:
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund --prefer-offline
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Run quality gates and verify production output
         run: npm run check
+
+      - name: Run browser regression tests
+        run: npm run test:e2e
 
       - name: Audit production dependencies
         run: npm run audit:prod

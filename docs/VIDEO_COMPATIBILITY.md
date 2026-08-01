@@ -8,27 +8,33 @@ KB FORM accepts MP4, WebM, and MOV container hints, then lets the browser's nati
 
 All analysis remains in the browser. The complete source stays available for preview. Only presented frames within the selected 4–10 second range are cropped, downscaled to at most 640 pixels on the longest edge, and submitted to inference; the browser may internally decode earlier keyframes required by the selected media. There is one transferable `ImageBitmap` in flight and no frame queue.
 
-The player treats the media element's native `ended` event as the canonical EOF signal. If EOF arrives while frame extraction or Worker inference is active, that exact frame is drained before success. Independent watchdogs distinguish decoder starvation, slow frame extraction, stalled Worker inference, and the whole-run deadline.
+The player treats the media element's native `ended` event as the canonical EOF signal. If EOF arrives while frame extraction or Worker inference is active, that exact frame is drained before success. Independent watchdogs distinguish decoder starvation (6 seconds), slow frame extraction (10 seconds), stalled Worker inference (15 seconds), and the 30-second whole-run deadline. The inference watchdog is re-armed after each bitmap transfer, so cold GPU startup is not incorrectly charged to extraction.
 
 ## Verified regression matrix
 
-Environment: local production build, Google Chrome 150.0.7871.212 on macOS, tested 2026-08-01.
+Primary environment: local production bundle, GPU-backed headful Chrome for Testing 151 on macOS, tested 2026-08-01. Default selected windows ranged from 4.2 to 9.9 seconds, and metadata became available in 27–266 ms.
 
 | Scenario | Media characteristics | Attempts | Outcome |
 | --- | --- | ---: | --- |
-| Exact EOF regression | H.264/yuv420p MP4, 4.204 s, selection 0–4.204 s | 10 | 10/10 completed; 38–43 processed frames; first run 2.22 s, warm runs 1.66–1.76 s |
-| Equivalent swing window | H.264/AAC MP4, 9.810 s | 1 | Completed; 92 processed frames; 3.77 s |
-| Equivalent swing window | VP8 WebM, 9.810 s | 1 | Completed; 71 processed frames; 4.50 s |
-| Equivalent swing window | Video-only VP9 WebM, 9.810 s | 1 | Completed; 76 processed frames; 4.72 s |
-| Phone-shaped VFR window | H.264 MP4, 540×960, 9.743 s, 25.25 average fps | 1 | Completed; 80 processed frames; 4.73 s |
-| Damaged-file control | Metadata-readable fast-start H.264 MP4 truncated mid-bitstream | 1 | Rejected in 2.27 s as incomplete/damaged; editor and retry remained available |
-| Recovery after damage | Valid VP9 WebM immediately after the truncated file | 1 | Completed; 74 processed frames; 4.71 s without reload or Worker reinitialization |
-| No-person control | MDN CC0 flower H.264/AAC MP4, 5.055 s | 1 | Completed in 1.80 s with 46 processed frames; conservatively returned **Unable to assess reliably**, 0 reps |
-| Public WebM tail EOF | Wikimedia conventional swings, tail re-encoded as 9.900 s VP8 WebM, selection 0–9.900 s | 1 | Completed; 59 processed frames; 4.40 s; conservatively returned **Unable to assess reliably** |
+| Exact EOF regression | H.264/yuv420p MP4, 4.204 s, selection 0–4.204 s | 6 | 6/6 completed in 1.679–1.899 s; processed-frame counts were 28, 28, 29, 32, 29, and 28 |
+| Equivalent swing window | H.264/AAC MP4, 9.810 s | 1 | Completed in 10.297 s with 118 processed frames |
+| Equivalent swing window | VP8 WebM, 9.810 s | 1 | Completed in 5.454 s with 105 processed frames |
+| Equivalent swing window | Video-only VP9 WebM, 9.810 s | 1 | Completed in 4.833 s with 72 processed frames |
+| Phone-shaped VFR window | H.264 MP4, 540×960, 9.743 s, 25.25 average fps | 1 | Completed in 4.764 s with 77 processed frames |
+| Damaged-file control | Metadata-readable fast-start H.264 MP4 truncated mid-bitstream | 1 | Rejected in 2.245 s after 37 progress frames with the expected incomplete/damaged message; editor and retry remained available |
+| Recovery after damage | Valid VP9 WebM immediately after the truncated file | 1 | Completed in 4.766 s with 73 processed frames, without reload or Worker reinitialization |
+| No-person control | MDN CC0 flower H.264/AAC MP4, 5.055 s | 1 | Completed in 1.628 s with 34 processed frames; conservatively abstained with 0 reps |
+| Public WebM tail EOF | Wikimedia conventional swings, tail re-encoded as 9.900 s VP8 WebM, selection 0–9.900 s | 1 | Completed in 4.592 s with 72 processed frames; conservatively abstained with 0 reps |
 
-Before the fix, the exact-EOF H.264 case failed 9 of 12 attempts with “Video decoding stalled.” Chrome emitted `ended` at the declared duration but did not present another frame, so an implementation that only checked completion inside `requestVideoFrameCallback` eventually fired its decoder timer. After native EOF handling and final one-frame backpressure were in place, the same fixture passed 10 consecutive attempts.
+Every valid Chrome 151 run completed without “Video decoding stalled” or an application error. Every valid fixture conservatively abstained with 0 reps; that is correct fail-closed behavior for this transport-oriented evidence set, not validation of coaching accuracy.
+
+The same production-bundle scenarios also passed in the installed Google Chrome 150.0.7871.212 on macOS. That corroborating run covered all listed codecs and controls, including 10/10 exact-EOF completions, rejection and immediate recovery after the truncated MP4, and conservative abstention for the no-person and public WebM controls. The Chrome 151 table above is the current measurement record.
+
+Before the EOF fix, the exact-EOF H.264 case failed 9 of 12 attempts with “Video decoding stalled.” Chrome emitted `ended` at the declared duration but did not present another frame, so an implementation that only checked completion inside `requestVideoFrameCallback` eventually fired its decoder timer. After native EOF handling and final one-frame backpressure were in place, the historical Chrome 150 run passed 10 consecutive attempts and the final Chrome 151 run passed 6/6.
 
 The deliberately truncated fast-start MP4 exposed a second edge case: Chrome may move `currentTime` to the declared duration even though the last decoded frame is much earlier. Completion therefore uses the last decoded media timestamp—not `currentTime`—to reject incomplete selections.
+
+A software-only headless browser run remains a known test-environment limitation: without GPU-backed inference, it can reach the 30-second whole-run cap after advancing only about five seconds through the media. This does not reproduce in the GPU-backed headful Chrome 151 matrix or the installed Chrome 150 matrix, but it prevents treating software-only headless timing as representative of a normal browser/device. Physical-device and cross-browser coverage remains outstanding below.
 
 ## Public sources and provenance
 

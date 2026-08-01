@@ -4,6 +4,14 @@
   "installCommand": "npm ci --no-audit --no-fund",
   "buildCommand": "npm run build:verify",
   "outputDirectory": "dist",
+  "functions": {
+    "api/realtime-cue.ts": {
+      "maxDuration": 15
+    },
+    "api/realtime-session.ts": {
+      "maxDuration": 15
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",

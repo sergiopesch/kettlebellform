@@ -24,5 +24,19 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
     }
+  },
+  {
+    files: [
+      "api/**/*.ts",
+      "e2e/**/*.ts",
+      "server/**/*.ts",
+      "playwright.config.ts",
+      "vite.config.ts"
+    ],
+    languageOptions: {
+      globals: {
+        ...globals.node
+      }
+    }
   }
 );
