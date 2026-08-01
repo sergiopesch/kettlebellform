@@ -1,6 +1,6 @@
 # Kettlebell Form Coach: Technical Roadmap
 
-Status: implementation-aligned roadmap · Evidence checked: 31 July 2026 · Scope: browser camera capture, pose inference, swing analysis, performance, privacy, and validation
+Status: implementation-aligned roadmap · Evidence checked: 1 August 2026 · Scope: browser camera capture, pose inference, swing analysis, performance, privacy, and validation
 
 ## Delivery labels
 
@@ -27,14 +27,14 @@ both   -> main-thread calibration/SwingAnalyzer
 
 This split is intentional: synchronous MediaPipe inference owns the expensive worker boundary, while `SwingAnalyzer` remains a lightweight, pure, directly testable main-thread state machine. Move the analyzer only if profiling shows it is a meaningful source of main-thread work.
 
-Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at model path `/1/` is the **Current** engine. MediaPipe 1.0.0 is a gated **Next** migration because the available registry/install path in this environment could not install it during this implementation. WebGPU, WebNN, RTMLib/RTMPose, dense depth, and learned biomechanics remain **Research** until they outperform the current baseline on the project's own kettlebell dataset.
+Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at model path `/1/` is the **Current** engine. MediaPipe 1.x is a gated **Next** migration; the current published candidate is 1.0.1. The earlier 1.0.0 install cutoff was encountered during initial implementation, but availability is no longer the gate—side-by-side qualification is. WebGPU, WebNN, RTMLib/RTMPose, dense depth, and learned biomechanics remain **Research** until they outperform the current baseline on the project's own kettlebell dataset.
 
 ## Implemented baseline
 
 | Area | Current implementation | Status |
 | --- | --- | --- |
 | Inference isolation | A dedicated module Worker creates MediaPipe, calls synchronous `detectForVideo()` for live input, and uses stateless `detect()` for selected clip frames. Camera permission, React, canvas, calibration, and `SwingAnalyzer` stay on the main thread. | **Implemented** |
-| Frame scheduling and pressure | `requestVideoFrameCallback()` is primary, with a `requestAnimationFrame()` compatibility fallback. At most one `ImageBitmap` is being created or processed and there is no pending-frame queue. Live callbacks are skipped while busy; clip playback pauses during inference so device latency cannot create invalid source-time gaps. Every bitmap is closed by the Worker or by main-thread transfer-failure cleanup. | **Implemented** |
+| Frame scheduling and pressure | `requestVideoFrameCallback()` is primary, with a `requestAnimationFrame()` compatibility fallback. At most one `ImageBitmap` is being created or processed and there is no pending-frame queue. Live callbacks are skipped while busy; clip playback pauses through extraction/inference, then resumes at up to 4× on GPU or 2× on CPU so device latency cannot create invalid source-time gaps. Every bitmap is closed by the Worker or by main-thread cancellation, late-result, or transfer-failure cleanup. | **Implemented** |
 | Reproducible versions | npm package and Worker version are exact `0.10.35`; install stages matching WASM from the locked package and verifies the Full model revision with SHA-256 before serving both from the app origin. Vite is exact `8.1.5`. | **Implemented** |
 | Delegate fallback | The Worker attempts GPU/WebGL first and retries the same pinned Full model on CPU. | **Implemented; qualification remains** |
 | Bundle loading | The Three.js movement scene is loaded with `React.lazy()` and `Suspense`, keeping it out of the initial application chunk. | **Implemented** |
@@ -46,14 +46,14 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 | Area | Implemented baseline | Gap to close |
 | --- | --- | --- |
 | Runtime qualification | MediaPipe 0.10.35 Full runs in a Worker with GPU-to-CPU fallback and reports per-frame inference time. | Add sustained browser/device baselines, capture-to-result latency, accepted-analysis rate, initialization failure, resource growth, and delegate-specific qualification. CPU must not silently present delayed coaching if it misses the release gate. |
-| Runtime migration | Current package/WASM/model inputs are exact and mutually versioned. | MediaPipe 1.0.0 still needs an installable registry path plus side-by-side fixed-clip, browser, performance, and lifecycle qualification before adoption. |
+| Runtime migration | Current package/WASM/model inputs are exact and mutually versioned. | Published candidate MediaPipe 1.0.1 still needs side-by-side fixed-clip, browser, performance, asset, and lifecycle qualification before adoption. |
 | Browser acceleration | The code calls the MediaPipe `GPU` delegate. | MediaPipe Vision's Web GPU delegate uses WebGL, not WebGPU. The app should not claim WebGPU acceleration for this path. |
 | Coordinate validity | Swing angles and wrist depth rely heavily on `worldLandmarks`; project docs call them meter-scale. | The Task API labels world coordinates in metres, while BlazePose's model card says its underlying z estimate comes from synthetic GHUM fitting and is up to scale rather than measured metric depth. Until swing-specific validation resolves that distinction, wrist z is a model-relative proxy—not measured bell depth or a basis for velocity, power, force, or load claims. |
 | Signal quality | The analyzer fails closed below full-body, tracking, wrist, or camera-quality thresholds and returns an explicit assessed/unassessed discriminant. Clip IMAGE inference requests up to two poses and accepts evidence only when exactly one is returned. | Qualify the current gates and add direct blur/light, cadence, unsupported-style, and more robust scene-ambiguity checks; the two-pose result is an approximation, not proof that no bystander is present. |
 | Side-view landmarks | Left and right joint angles and wrists are averaged. | A side view commonly occludes the far side. Per-joint near-side selection based on visibility/stability should be evaluated instead of unconditional averaging. |
 | Coaching model | Goal/experience-dependent thresholds generate up to four internal per-frame feedback signals and a 0–100 score; the UI selects one current cue. Clinical/rehab modes are absent. | Thresholds are not yet validated against kettlebell ground truth or coach agreement. Add persistence, rep-level evidence, confidence, and a refractory period so the selected cue does not change too rapidly. |
 | Kettlebell path | Wrist midpoint is treated as the bell/hand path; entered bell mass only adjusts one cue's severity. | MediaPipe does not detect the kettlebell. The app cannot infer bell centre, mass, forces, torque, spinal load, or muscle activation from these landmarks. |
-| Testing and observability | Unit/application tests, clip scheduling/cleanup protocol tests, and coverage gates now exist. A local browser smoke run exercised upload, crop, analysis, cancellation controls, fail-closed results, focus restoration, 390 px reflow, and the loaded-asset inventory. | Add a versioned real-video regression corpus, target-device performance baselines, cue accuracy metrics, screen-reader testing, and production egress tests. |
+| Testing and observability | Unit/application tests, clip scheduling/cleanup protocol tests, coverage gates, and a documented public-video transport matrix now exist. Local Chrome runs exercised H.264, VP8, VP9, VFR, exact EOF, damaged-media recovery, no-person abstention, upload, crop, analysis, focus restoration, 390 px reflow, and the loaded-asset inventory. | Automate the public transport matrix; add a consented coach-labelled accuracy corpus, target-device performance baselines, cue metrics, screen-reader testing, and production egress tests. |
 | Privacy and supply chain | Fonts, the locked WASM runtime, and the checksum-verified model are staged at install and served from the application origin. Production CSP permits only same-origin font, runtime, model, and connection paths; a local browser asset inventory found no external resource. | Audit production browser egress and MediaPipe telemetry before claiming offline operation or first-party-only delivery. |
 
 ## ADR-001: worker-owned inference with fresh-frame backpressure
@@ -100,27 +100,27 @@ onSelectedClipFrame(frame):
 
 ### Fallbacks
 
-- If `requestVideoFrameCallback()` is unavailable, the current compatibility path uses `requestAnimationFrame()` with its monotonic callback timestamp, still through the Worker and under the same busy-frame skip rule.
+- If `requestVideoFrameCallback()` is unavailable, the current compatibility path uses `requestAnimationFrame()`, carrying the rAF timestamp for live input and reading `video.currentTime` for clip source time, still through the Worker and under the same busy-frame rule.
 - If transferable `ImageBitmap` is unavailable, use a qualified worker-safe image source. Do not silently return to continuous main-thread inference.
 - If GPU initialization fails, retry the same pinned model in the CPU worker.
 - If both worker paths fail, disable live coaching and show a compatibility diagnostic. Video preview may remain available; fabricated or severely delayed scoring may not.
 - `MediaStreamTrackProcessor` is a later progressive enhancement, not a ship-now dependency, because browser exposure still varies. [W3C draft](https://www.w3.org/TR/mediacapture-transform/)
 
-## ADR-002: preserve 0.10.35 and gate MediaPipe 1.0.0
+## ADR-002: preserve 0.10.35 and gate MediaPipe 1.x
 
-**Status:** exact-pinned 0.10.35 is **implemented**; 1.0.0 is a gated **Next** migration.
+**Status:** exact-pinned 0.10.35 is **implemented**; 1.0.1 is the current gated **Next** candidate.
 
 ### Decision
 
 - Keep `@mediapipe/tasks-vision` exact at `0.10.35`, load matching `0.10.35` WASM, and use the Pose Landmarker **Full** model artifact at versioned path `/1/` for the current baseline. There is no caret dependency or mutable `latest` model URL in the shipped path.
 - Record the package version, model path and eventually its SHA-256, delegate, thresholds, and app build in each diagnostic session. Self-host the exact matching WASM and model before making an offline or first-party-only claim.
-- Treat 1.0.0 as an application migration, not an automatic dependency update. The registry/install cutoff encountered during this implementation prevented a qualified install here; retry only when the artifact is available through the project's install path.
-- When installable, qualify 1.0.0 with a specific **Full** model artifact. If Full on CPU misses the release gate, report an unsupported live-analysis tier instead of silently changing the measurement model. Lite/Heavy device tiering is a later qualified change.
-- Preserve the immutable 0.10.35 package/WASM/model combination through the first 1.0.0 release window. Introduce a project-owned landmark schema before running engines side by side. If both must coexist in one canary build, isolate 0.10.35 behind an npm alias and separate dynamic chunk; do not mix one version's JavaScript with another version's WASM.
+- Treat the 1.x upgrade as an application migration, not an automatic dependency update. Version 1.0.0 was unavailable through the project registry during initial implementation; 1.0.1 is now published, so qualification—not package discovery—is the remaining gate.
+- Qualify 1.0.1 with a specific **Full** model artifact. If Full on CPU misses the release gate, report an unsupported live-analysis tier instead of silently changing the measurement model. Lite/Heavy device tiering is a later qualified change.
+- Preserve the immutable 0.10.35 package/WASM/model combination through the first qualified 1.x release window. Introduce a project-owned landmark schema before running engines side by side. If both must coexist in one canary build, isolate 0.10.35 behind an npm alias and separate dynamic chunk; do not mix one version's JavaScript with another version's WASM.
 
 ### Migration qualification
 
-After 1.0.0 becomes installable, run 0.10.35 and 1.0.0 against the same fixed clip corpus and target browsers. The 1.0.0 path must pass:
+Before adopting 1.0.1, run 0.10.35 and 1.0.1 against the same fixed clip corpus and target browsers. The 1.0.1 path must pass:
 
 - worker initialization and cleanup on GPU and CPU;
 - expected 33-landmark schema and finite values;
@@ -134,16 +134,16 @@ After 1.0.0 becomes installable, run 0.10.35 and 1.0.0 against the same fixed cl
 
 ### Rollback
 
-Canary 1.0.0 behind a build/runtime engine flag that does not require sending camera data off-device. If it causes initialization failures, material latency regression, resource growth, or clip-regression failures, keep or redeploy the immutable 0.10.35 build. A dual-runtime canary is optional and must use the isolated alias/chunk described above. Preserve the recorded engine/model version so sessions across the rollback are not compared as if they used one measurement system.
+Canary 1.0.1 behind a build/runtime engine flag that does not require sending camera data off-device. If it causes initialization failures, material latency regression, resource growth, or clip-regression failures, keep or redeploy the immutable 0.10.35 build. A dual-runtime canary is optional and must use the isolated alias/chunk described above. Preserve the recorded engine/model version so sessions across the rollback are not compared as if they used one measurement system.
 
-**Evidence:** npm lists `@mediapipe/tasks-vision` 1.0.0 as published on 28 July 2026, so it is the next candidate but has little production soak time. Publication does not override the failed registry/install availability in this implementation environment. [npm package versions](https://www.npmjs.com/package/%40mediapipe/tasks-vision?activeTab=versions) The official model card reports higher 2D landmark accuracy for Heavy than Full and Lite, but its performance numbers are old native TFLite measurements, not Web guarantees. [BlazePose GHUM model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf)
+**Evidence:** npm lists `@mediapipe/tasks-vision` 1.0.0 as published on 28 July 2026 and 1.0.1 as the current `latest`, published on 31 July 2026. That short production history supports a measured migration rather than an automatic upgrade. [npm package versions](https://www.npmjs.com/package/%40mediapipe/tasks-vision?activeTab=versions) The official model card reports higher 2D landmark accuracy for Heavy than Full and Lite, but its performance numbers are old native TFLite measurements, not Web guarantees. [BlazePose GHUM model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf)
 
 ## Runtime choices
 
 | Runtime/model | Delivery state | Decision and promotion requirement |
 | --- | --- | --- |
 | MediaPipe Pose Landmarker 0.10.35 Full, module Worker, GPU/WebGL with CPU fallback | **Current / implemented** | Exact-pinned production baseline: package and WASM `0.10.35`, model artifact `/1/`. Complete performance, privacy, and device qualification without changing those inputs. |
-| MediaPipe Pose Landmarker 1.0.0 Full | **Next / gated** | Retry only after it is installable through the project registry path, then pass the full migration suite. Keep 0.10.35 as the reproducible rollback. |
+| MediaPipe Pose Landmarker 1.0.1 Full | **Next / gated** | Run the full side-by-side migration suite before adoption. Keep 0.10.35 as the reproducible rollback. |
 | MediaPipe Lite/Heavy | **Next** | Select only from measured device tiers. Heavy must never be the blind CPU fallback. |
 | ONNX Runtime Web + RTMPose 26-keypoint | **Research** | The 2026 cross-framework exercise study found RTMLib materially better than MediaPipe in controlled side views, but RTMLib is not a browser drop-in: it requires a person detector, ONNX preprocessing/postprocessing, operator checks, model/data-license review, and target-device benchmarks. Promote only after it wins the project's swing dataset without unacceptable load/latency cost. [RTMPose paper](https://arxiv.org/abs/2303.07399), [RTMLib](https://github.com/Tau-J/rtmlib), [2026 comparison](https://doi.org/10.1109/TPAMI.2026.3672463) |
 | WebGPU | **Research runtime for the RTMPose adapter** | MediaPipe Web Vision currently uses WebGL, so WebGPU does not accelerate the ship-now engine. ONNX Runtime WebGPU is promising, but requires feature and operator detection, WASM fallback, profiling, and GPU-resource lifecycle tests. [MediaPipe WebGPU issue](https://github.com/google-ai-edge/mediapipe/issues/5826), [ONNX Runtime WebGPU](https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html) |
@@ -159,8 +159,8 @@ Feature-detect capabilities; do not choose a path from the user-agent string.
 | Capability | Preferred path | Fallback |
 | --- | --- | --- |
 | Camera | HTTPS `getUserMedia()`, requested only after a user action, `audio: false`; use actual track settings returned by the browser. | Explain permission/security failure and support prerecorded regression clips in development only. Camera capture is personally identifying and requires explicit consent. [Media Capture specification](https://www.w3.org/TR/mediacapture-streams/) |
-| Frame callback | `requestVideoFrameCallback()` with its monotonic callback timestamp. Add metadata-derived capture/presentation and dropped-frame telemetry when qualified. | Current `requestAnimationFrame()` compatibility loop, using its callback timestamp and the same Worker/backpressure rule. |
-| Inference | Exact-pinned MediaPipe 0.10.35 Full with GPU/WebGL delegate in the module Worker. | The same pinned Full model on CPU in the Worker; disable live analysis if it misses the performance gate. MediaPipe 1.0.0 and Lite/Heavy tiering require separate qualification. |
+| Frame callback | `requestVideoFrameCallback()` with `metadata.mediaTime`. Add metadata-derived capture/presentation and dropped-frame telemetry when qualified. | Current `requestAnimationFrame()` compatibility loop: its callback timestamp for live input, advancing `video.currentTime` for clip input, and the same Worker/backpressure rule. |
+| Inference | Exact-pinned MediaPipe 0.10.35 Full with GPU/WebGL delegate in the module Worker. | The same pinned Full model on CPU in the Worker; disable live analysis if it misses the performance gate. MediaPipe 1.0.1 and Lite/Heavy tiering require separate qualification. |
 | Frame transport | One transferable `ImageBitmap` in flight; skip callbacks while busy and close the bitmap in the Worker. | A qualified worker-compatible image source with the same one-in-flight/no-pending bound. |
 | Overlay | Main-thread canvas showing only the latest accepted result. | Reduce overlay complexity/rate before reducing analysis correctness. Offscreen rendering is optional. |
 | ONNX challenger | `navigator.gpu` plus successful model/operator initialization. | WASM SIMD; multithreaded WASM only under successful cross-origin isolation. [ONNX Runtime performance guide](https://onnxruntime.ai/docs/tutorials/web/performance-diagnosis.html) |
@@ -247,14 +247,14 @@ These are **Targets**, not research-derived safety thresholds:
 
 **Exit:** low-quality or unsupported motion cannot receive a positive score; network and camera-lifecycle tests pass; user-facing claims match the measurement limits.
 
-### Phase 3 — **Next:** qualify MediaPipe 1.0.0
+### Phase 3 — **Next:** qualify MediaPipe 1.0.1
 
-- Retry installation only after 1.0.0 is available through the project's registry path; do not loosen the current exact pin to discover it at runtime.
-- Pin the 1.0.0 package, matching WASM, and one specific Full model artifact in a candidate build.
+- Install 1.0.1 only in a migration branch; do not loosen the shipped exact pin or discover a runtime version dynamically.
+- Pin the 1.0.1 package, matching WASM, and one specific Full model artifact in a candidate build.
 - Run the full migration qualification against the immutable 0.10.35 clip and browser/device baseline.
 - Canary behind an engine flag, exercise rollback, and promote only if accuracy, latency, lifecycle, privacy, and resource gates pass.
 
-**Exit:** 1.0.0 is installable and reproducible, passes all migration gates, and retains an exercised 0.10.35 rollback; otherwise 0.10.35 remains current.
+**Exit:** 1.0.1 is reproducible, passes all migration gates, and retains an exercised 0.10.35 rollback; otherwise 0.10.35 remains current.
 
 ### Phase 4 — **Next:** validate the coaching model
 

@@ -6,7 +6,7 @@
 
 An on-device, browser-based technique-awareness coach for one deliberately narrow movement: the two-hand, shoulder-height, hip-hinge kettlebell swing.
 
-[Open KB FORM](https://kettlebellform.vercel.app) · [Read the technical audit](docs/AUDIT_REPORT.md) · [Review the evidence boundary](docs/EVIDENCE_AND_SAFETY.md)
+[Open KB FORM](https://kettlebellform.vercel.app) · [Read the technical audit](docs/AUDIT_REPORT.md) · [Review video compatibility](docs/VIDEO_COMPATIBILITY.md) · [Review the evidence boundary](docs/EVIDENCE_AND_SAFETY.md)
 
 ![KB FORM coaching preview](docs/screenshots/kb-form-preview-desktop.jpg)
 
@@ -32,7 +32,7 @@ KB FORM turns a side-view camera feed or a locally selected video clip into conf
 
 The repository's clip workflow keeps the complete source available for local preview while sending only the selected time window and spatial frame through pose analysis. The selection is non-destructive: KB FORM does not upload, persist, transcode, or create a shortened copy of the video, and clip names, frames, and results are excluded from analytics.
 
-Video decoding uses the browser's native media stack. Unsupported containers or codecs fail closed with a format message rather than being transferred elsewhere.
+Video decoding uses the browser's native media stack. Clean end-of-file, native media errors, frame extraction, and pose inference have separate lifecycle signals and watchdogs, so a completed clip is not mistaken for a stalled decoder. Detected unsupported, damaged, or incomplete media fails closed with specific recovery guidance rather than being transferred elsewhere. The [public-video compatibility matrix](docs/VIDEO_COMPATIBILITY.md) records the tested sources, hashes, transformations, outcomes, and remaining device coverage.
 
 ![Local clip upload](docs/screenshots/kb-form-clip-upload.jpg)
 
@@ -56,7 +56,7 @@ both → one transferable ImageBitmap in flight, with no frame queue
   → confidence-aware cue and overlay UI
 ```
 
-The initial app bundle stays separate from the Worker and the optional Three.js movement view. Inference prefers GPU and retries on CPU with a fresh MediaPipe module loader if GPU initialization fails. Frame responses are correlated to an exact Worker, job, and frame; cancelling or timing out an already-transferred frame replaces only that Worker and keeps new analysis disabled until the replacement reports ready.
+The initial app bundle stays separate from the Worker and the optional Three.js movement view. Clip playback pauses through extraction and inference for each sampled frame, keeps at most one transferable frame in flight and no frame queue, and then resumes at up to 4× on GPU or 2× on CPU. Native `ended` handling drains the final in-flight frame before settling. Decoder, bitmap-extraction, Worker-inference, and whole-run timeouts report distinct failures. Inference prefers GPU and retries on CPU with a fresh MediaPipe module loader if GPU initialization fails. Frame responses are correlated to an exact Worker, job, and frame; cancelling or timing out an already-transferred frame replaces only that Worker and keeps new analysis disabled until the replacement reports ready.
 
 MediaPipe `0.10.35`, its SIMD WASM runtime, and the full float16 pose model are pinned. `npm ci` copies the runtime from the locked package, downloads the revisioned model, verifies its SHA-256 digest, and stages it with the brand fonts as same-origin production assets. Runtime camera and clip sessions therefore do not depend on Google Fonts, jsDelivr, or Google Storage.
 
@@ -81,7 +81,7 @@ npm ci
 npm run dev
 ```
 
-Open the printed `127.0.0.1` URL. Use **Preview coaching** for the camera-free demonstration, **Start camera** for live analysis, or **Choose video** for the local clip workflow. Clip support depends on the browser's native decoders.
+Open the printed `127.0.0.1` URL. Use **Preview coaching** for the camera-free demonstration, **Start camera** for live analysis, or **Analyze a clip** and then **Choose a video** for the local clip workflow. Clip support depends on the browser's native decoders.
 
 ### Quality commands
 
@@ -106,14 +106,17 @@ npm run preview        # serve the production build locally
 
 ## Validation status
 
-Automated tests cover calibration, tracking loss, ordered rep phases, abstention, malformed input, feedback/risk behavior, setup UI, and camera request/cancellation lifecycle. Browser QA covers the deployed setup and preview flows at desktop and mobile sizes.
+The deterministic suite currently contains 128 tests covering calibration, tracking loss, ordered rep phases, abstention, malformed input, feedback/risk behavior, setup UI, camera request/cancellation lifecycle, exact end-of-file completion, false endpoint jumps in both frame schedulers, in-flight final-frame draining, phase-specific watchdogs, native media errors, damaged-media recovery, and immediate retry.
 
-The remaining release gates require real evidence: physical camera sessions, held-out athlete videos, qualified coach labels, target-device performance/thermal testing, native clip codec/orientation coverage, trim and crop accessibility testing, privacy-egress inspection, and motion-capture comparison where kinematic claims require it.
+Real-browser transport QA on the final worktree in Chrome 150 includes H.264 MP4, VP8 WebM, VP9 WebM, portrait VFR H.264, an exact-duration 4.2-second EOF clip, a public VP8 tail window, a deliberately truncated fast-start MP4, and a CC0 no-person control. The formerly intermittent EOF case passed 10 consecutive attempts; the damaged file failed promptly and the next valid clip succeeded without a reload. See [Video compatibility and public-fixture QA](docs/VIDEO_COMPATIBILITY.md) for the recorded matrix, fixture recipe, and evidence boundary.
+
+The remaining release gates require real evidence: physical camera sessions, held-out athlete videos, qualified coach labels, Safari/Firefox/iOS/Android and HEVC/MOV coverage, target-device performance/thermal testing, trim and crop accessibility testing, privacy-egress inspection, and motion-capture comparison where kinematic claims require it.
 
 ## Documentation
 
 - [Technical audit](docs/AUDIT_REPORT.md)
 - [Evidence and safety specification](docs/EVIDENCE_AND_SAFETY.md)
+- [Video compatibility and public-fixture QA](docs/VIDEO_COMPATIBILITY.md)
 - [Technical roadmap](docs/TECHNICAL_ROADMAP.md)
 - [Coaching model](docs/coach-model.md)
 - [Generated and source assets](docs/assets.md)

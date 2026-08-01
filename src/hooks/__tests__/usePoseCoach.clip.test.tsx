@@ -199,6 +199,29 @@ async function fireNextVideoFrame(mediaTimeSeconds: number) {
   });
 }
 
+async function endVideo(video: HTMLVideoElement) {
+  video.currentTime = video.duration;
+  Object.defineProperty(video, "ended", { configurable: true, value: true });
+  await act(async () => {
+    video.dispatchEvent(new Event("ended"));
+    await Promise.resolve();
+  });
+}
+
+async function failVideoDecode(video: HTMLVideoElement) {
+  Object.defineProperty(video, "error", {
+    configurable: true,
+    value: {
+      code: 3,
+      message: "The media resource could not be decoded."
+    } satisfies Pick<MediaError, "code" | "message">
+  });
+  await act(async () => {
+    video.dispatchEvent(new Event("error"));
+    await Promise.resolve();
+  });
+}
+
 async function emitResult(
   worker: WorkerStub,
   request: PoseWorkerFrameRequest,
@@ -381,7 +404,7 @@ describe("usePoseCoach clip analysis protocol", () => {
     await expect(analysisPromise).resolves.toMatchObject({ processedFrames: 1 });
   });
 
-  it("pauses media time while a frame is in flight and resumes only after inference", async () => {
+  it("pauses source time while Worker backpressure keeps only one frame in flight", async () => {
     const hook = renderHook(() => usePoseCoach(settings, layers));
     await makeModelReady(hook);
     const worker = latestWorker();
@@ -404,12 +427,397 @@ describe("usePoseCoach clip analysis protocol", () => {
     expect(requestVideoFrameCallbackMock).toHaveBeenCalledTimes(1);
 
     await emitResult(worker, worker.frameRequests[0]);
-    await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(requestVideoFrameCallbackMock).toHaveBeenCalledTimes(2));
+    expect(play).toHaveBeenCalledTimes(2);
+    expect(pause).toHaveBeenCalledTimes(2);
 
     await fireNextVideoFrame(4);
     await expect(analysisPromise).resolves.toMatchObject({ processedFrames: 1 });
+    expect(play).toHaveBeenCalledTimes(2);
     expect(pause).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not accept a currentTime jump as proof that the selected endpoint decoded", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+      void analysisPromise.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        }
+      );
+    });
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    await fireNextVideoFrame(1.8);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+    video.currentTime = video.duration;
+    await emitResult(worker, worker.frameRequests[0]);
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    expect(outcome).toBe("pending");
+
+    await endVideo(video);
+
+    await expect(analysisPromise).rejects.toThrow(/ended before.*window|damaged|incomplete/i);
+    expect(outcome).toBe("rejected");
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a currentTime endpoint jump in the animation-frame fallback", async () => {
+    delete (HTMLVideoElement.prototype as Partial<HTMLVideoElement>).requestVideoFrameCallback;
+    let pendingAnimationFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        pendingAnimationFrame = callback;
+        return 1;
+      })
+    );
+    const fireAnimationFrame = async () => {
+      const callback = pendingAnimationFrame;
+      if (!callback) {
+        throw new Error("Expected a pending animation-frame callback.");
+      }
+      pendingAnimationFrame = null;
+      await act(async () => {
+        callback(500);
+        await Promise.resolve();
+      });
+    };
+
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+    });
+    const rejection = expect(analysisPromise).rejects.toThrow(/skipped too far|damaged|interrupted/i);
+    await waitFor(() => expect(pendingAnimationFrame).not.toBeNull());
+
+    video.currentTime = 0.1;
+    await fireAnimationFrame();
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+    await emitResult(worker, worker.frameRequests[0]);
+    await waitFor(() => expect(pendingAnimationFrame).not.toBeNull());
+
+    video.currentTime = video.duration;
+    await fireAnimationFrame();
+
+    await rejection;
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("finishes the animation-frame fallback from a recent processed frame", async () => {
+    delete (HTMLVideoElement.prototype as Partial<HTMLVideoElement>).requestVideoFrameCallback;
+    let pendingAnimationFrame: FrameRequestCallback | null = null;
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        pendingAnimationFrame = callback;
+        return 1;
+      })
+    );
+    const fireAnimationFrame = async () => {
+      const callback = pendingAnimationFrame;
+      if (!callback) {
+        throw new Error("Expected a pending animation-frame callback.");
+      }
+      pendingAnimationFrame = null;
+      await act(async () => {
+        callback(500);
+        await Promise.resolve();
+      });
+    };
+
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+    });
+    await waitFor(() => expect(pendingAnimationFrame).not.toBeNull());
+
+    video.currentTime = 3.8;
+    await fireAnimationFrame();
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+    await emitResult(worker, worker.frameRequests[0]);
+    await waitFor(() => expect(pendingAnimationFrame).not.toBeNull());
+
+    video.currentTime = video.duration;
+    await fireAnimationFrame();
+
+    await expect(analysisPromise).resolves.toMatchObject({ processedFrames: 1 });
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("rejects an endpoint callback when no frame was processed", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(makeVideo({ duration: 4 })));
+    });
+    const rejection = expect(analysisPromise).rejects.toThrow(/no decodable video frames/i);
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await fireNextVideoFrame(4);
+
+    await rejection;
+    expect(hook.result.current.clipBusy).toBe(false);
+  });
+
+  it("finishes when media ends after its final decoded frame falls just before endTime", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+    });
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    // Real containers can report a duration a few milliseconds beyond the last
+    // decoded frame. The Wikimedia VP8 fixture has this exact shape.
+    await fireNextVideoFrame(3.916);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+    await emitResult(worker, worker.frameRequests[0]);
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    await endVideo(video);
+
+    await expect(analysisPromise).resolves.toMatchObject({
+      processedFrames: 1,
+      expectedFrames: 60
+    });
+    expect(pendingVideoFrames).toHaveLength(0);
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("drains the final transferred frame before settling an ended event", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+      void analysisPromise.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        }
+      );
+    });
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await fireNextVideoFrame(3.916);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+
+    await endVideo(video);
+    await flushMicrotasks();
+
+    expect(outcome).toBe("pending");
+    expect(hook.result.current.clipBusy).toBe(true);
+    expect(worker.terminate).not.toHaveBeenCalled();
+
+    await emitResult(worker, worker.frameRequests[0]);
+
+    await expect(analysisPromise).resolves.toMatchObject({ processedFrames: 1 });
+    expect(outcome).toBe("resolved");
+    expect(hook.result.current.clipBusy).toBe(false);
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a truncated source using the last presented frame even when Chrome reports duration at ended", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let truncatedRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      truncatedRun = hook.result.current.analyzeClip(options(video));
+    });
+    const truncatedOutcome = truncatedRun.then(
+      () => null,
+      (error: unknown) => error
+    );
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    await fireNextVideoFrame(1.8);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
+    await emitResult(worker, worker.frameRequests[0]);
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    // Chrome can snap currentTime to the declared duration for a truncated
+    // fast-start MP4. The last presented frame remains the reliable endpoint.
+    await endVideo(video);
+
+    await expect(truncatedOutcome).resolves.toMatchObject({
+      message: expect.stringMatching(/ended before.*window|damaged|incomplete/i)
+    });
+    expect(hook.result.current.clipBusy).toBe(false);
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(WorkerStub.instances).toHaveLength(1);
+    expect(pendingVideoFrames).toHaveLength(0);
+
+    video.currentTime = 0;
+    Object.defineProperty(video, "ended", { configurable: true, value: false });
+    let recoveredRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+    act(() => {
+      recoveredRun = hook.result.current.analyzeClip(options(video));
+    });
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await fireNextVideoFrame(3.916);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(2));
+    await emitResult(worker, worker.frameRequests[1]);
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await endVideo(video);
+
+    await expect(recoveredRun).resolves.toMatchObject({ processedFrames: 1 });
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(WorkerStub.instances).toHaveLength(1);
+  });
+
+  it("does not mistake slow Worker inference for a decoder stall", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    vi.useFakeTimers();
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+    let outcome: "pending" | "resolved" | "rejected" = "pending";
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+      void analysisPromise.then(
+        () => {
+          outcome = "resolved";
+        },
+        () => {
+          outcome = "rejected";
+        }
+      );
+    });
+    await flushMicrotasks();
+    await fireNextVideoFrame(0.1);
+    await flushMicrotasks();
+    expect(worker.frameRequests).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_100);
+    });
+
+    expect(outcome).toBe("pending");
+    expect(hook.result.current.clipBusy).toBe(true);
+    expect(worker.terminate).not.toHaveBeenCalled();
+
+    await emitResult(worker, worker.frameRequests[0]);
+    await flushMicrotasks();
+    await fireNextVideoFrame(4);
+
+    await expect(analysisPromise).resolves.toMatchObject({ processedFrames: 1 });
+    expect(outcome).toBe("resolved");
+  });
+
+  it("times out only while awaiting a decoded frame and lets a retry succeed", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    vi.useFakeTimers();
+    let firstRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      firstRun = hook.result.current.analyzeClip(options(video));
+    });
+    const firstOutcome = firstRun.then(
+      () => null,
+      (error: unknown) => error
+    );
+    await flushMicrotasks();
+    expect(pendingVideoFrames).toHaveLength(1);
+    await fireNextVideoFrame(0.1);
+    await flushMicrotasks();
+    expect(worker.frameRequests).toHaveLength(1);
+    await emitResult(worker, worker.frameRequests[0]);
+    await flushMicrotasks();
+    expect(pendingVideoFrames).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_100);
+    });
+
+    await expect(firstOutcome).resolves.toMatchObject({
+      message: expect.stringMatching(/decod|producing frames|stalled/i)
+    });
+    expect(hook.result.current.clipBusy).toBe(false);
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(WorkerStub.instances).toHaveLength(1);
+    expect(pendingVideoFrames).toHaveLength(0);
+
+    let recoveredRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+    act(() => {
+      recoveredRun = hook.result.current.analyzeClip(options(video));
+    });
+    await flushMicrotasks();
+    await fireNextVideoFrame(0.1);
+    await flushMicrotasks();
+    expect(worker.frameRequests).toHaveLength(2);
+
+    await emitResult(worker, worker.frameRequests[1]);
+    await flushMicrotasks();
+    await fireNextVideoFrame(4);
+
+    await expect(recoveredRun).resolves.toMatchObject({ processedFrames: 1 });
+    expect(hook.result.current.clipBusy).toBe(false);
+  });
+
+  it("reports an in-play media decode failure as a codec-specific video error", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo({ duration: 4 });
+    let analysisPromise!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      analysisPromise = hook.result.current.analyzeClip(options(video));
+    });
+    const outcome = analysisPromise.then(
+      () => null,
+      (error: unknown) => error
+    );
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+
+    await failVideoDecode(video);
+
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringMatching(/codec|corrupt|decod|unsupported/i)
+    });
+    expect(hook.result.current.clipBusy).toBe(false);
+    expect(worker.terminate).not.toHaveBeenCalled();
+    expect(pendingVideoFrames).toHaveLength(0);
   });
 
   it("closes an untransferred bitmap after postMessage throws and cleanly runs another job", async () => {
@@ -450,7 +858,7 @@ describe("usePoseCoach clip analysis protocol", () => {
     expect(WorkerStub.instances).toHaveLength(1);
   });
 
-  it("releases a timed-out pending bitmap without letting its late completion clear a newer frame", async () => {
+  it("times out frame extraction separately and keeps late bitmap completion isolated", async () => {
     const firstBitmap = deferred<ImageBitmap>();
     const firstClose = vi.fn();
     const laterClose = vi.fn();
@@ -480,7 +888,15 @@ describe("usePoseCoach clip analysis protocol", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6_100);
     });
-    await expect(firstOutcome).resolves.toMatchObject({ message: expect.stringMatching(/stalled/i) });
+    expect(hook.result.current.clipBusy).toBe(true);
+    expect(worker.terminate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    await expect(firstOutcome).resolves.toMatchObject({
+      message: expect.stringMatching(/extracting.*frame.*too long/i)
+    });
     expect(worker.terminate).not.toHaveBeenCalled();
 
     let secondRun!: ReturnType<typeof hook.result.current.analyzeClip>;
@@ -516,7 +932,7 @@ describe("usePoseCoach clip analysis protocol", () => {
     await expect(secondRun).resolves.toMatchObject({ processedFrames: 1 });
   });
 
-  it("replaces a silent Worker after the clip stall timeout and accepts a new job", async () => {
+  it("replaces a silent Worker after the processing timeout and accepts a new job", async () => {
     const hook = renderHook(() => usePoseCoach(settings, layers));
     await makeModelReady(hook);
     const firstWorker = latestWorker();
@@ -540,7 +956,16 @@ describe("usePoseCoach clip analysis protocol", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(6_100);
     });
-    await expect(firstOutcome).resolves.toMatchObject({ message: expect.stringMatching(/stalled/i) });
+    expect(hook.result.current.clipBusy).toBe(true);
+    expect(firstWorker.terminate).not.toHaveBeenCalled();
+    expect(WorkerStub.instances).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    await expect(firstOutcome).resolves.toMatchObject({
+      message: expect.stringMatching(/pose engine.*stopped responding/i)
+    });
     expect(firstWorker.terminate).toHaveBeenCalledOnce();
     expect(WorkerStub.instances).toHaveLength(2);
     expect(hook.result.current.modelStatus).toBe("loading");

@@ -29,6 +29,7 @@ import {
   clampTrimRange,
   getCropPixels,
   getInferenceDimensions,
+  getVideoMediaErrorMessage,
   mapAnalysisToSource,
   validateVideoFile,
   validateVideoMetadata,
@@ -76,6 +77,7 @@ const RESULT_LAYERS: AnatomyLayerState = {
   skeleton: true,
   gaussian: true
 };
+const METADATA_TIMEOUT_MS = 8_000;
 
 function formatClipTime(seconds: number): string {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
@@ -173,6 +175,21 @@ export default function VideoClipWorkspace({
     resetResult();
   }, [cancelClipAnalysis, disposeVideo, resetResult]);
 
+  useEffect(() => {
+    if (!clip || clip.duration !== null) {
+      return;
+    }
+    const pendingUrl = clip.url;
+    const timeout = window.setTimeout(() => {
+      if (objectUrlRef.current === pendingUrl) {
+        rejectCurrentClip(
+          "Reading this video's metadata took too long. It may be damaged or use an unsupported codec."
+        );
+      }
+    }, METADATA_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [clip, rejectCurrentClip]);
+
   const removeClip = useCallback(() => {
     cancelClipAnalysis();
     disposeVideo();
@@ -230,6 +247,20 @@ export default function VideoClipWorkspace({
       height: video.videoHeight
     } : current);
   }, [rejectCurrentClip]);
+
+  const onVideoError = useCallback(() => {
+    const message = getVideoMediaErrorMessage(videoRef.current?.error ?? null);
+    if (stage === "analyzing") {
+      cancelClipAnalysis();
+      videoRef.current?.pause();
+      setPreviewing(false);
+      setSourcePlaying(false);
+      setStage("editing");
+      setError(message);
+      return;
+    }
+    rejectCurrentClip(message);
+  }, [cancelClipAnalysis, rejectCurrentClip, stage]);
 
   const updateStart = useCallback((value: number) => {
     if (!clip?.duration) {
@@ -475,7 +506,7 @@ export default function VideoClipWorkspace({
           </button>
           <div className="clip-format-line">
             <span>MP4 · WebM · MOV</span>
-            <span>Up to {VIDEO_CLIP_LIMITS.maxSourceSeconds}s · {Math.round(VIDEO_CLIP_LIMITS.maxBytes / (1024 * 1024))} MB</span>
+            <span>Up to {VIDEO_CLIP_LIMITS.maxSourceDurationSeconds}s · {Math.round(VIDEO_CLIP_LIMITS.maxFileBytes / (1024 * 1024))} MB</span>
           </div>
           <div className="privacy-line clip-privacy-line">
             <LockKeyhole aria-hidden="true" />
@@ -528,7 +559,7 @@ export default function VideoClipWorkspace({
             muted
             aria-label="Selected source video"
             onLoadedMetadata={onMetadataLoaded}
-            onError={() => rejectCurrentClip("This browser could not decode the selected video. Try an MP4 or WebM file.")}
+            onError={onVideoError}
             onTimeUpdate={(event) => {
               if (previewing && event.currentTarget.currentTime >= trim.end) {
                 event.currentTarget.pause();

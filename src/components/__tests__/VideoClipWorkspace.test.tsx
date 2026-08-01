@@ -38,6 +38,13 @@ function loadMetadata(video: HTMLVideoElement, duration = 25, width = 1920, heig
   fireEvent.loadedMetadata(video);
 }
 
+function setMediaError(video: HTMLVideoElement, code: number): void {
+  Object.defineProperty(video, "error", {
+    configurable: true,
+    value: { code } satisfies Pick<MediaError, "code">
+  });
+}
+
 describe("VideoClipWorkspace", () => {
   let createObjectUrl: ReturnType<typeof vi.spyOn>;
   let revokeObjectUrl: ReturnType<typeof vi.spyOn>;
@@ -58,6 +65,7 @@ describe("VideoClipWorkspace", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -74,7 +82,7 @@ describe("VideoClipWorkspace", () => {
     expect(screen.getByText(/does not upload, store, or transcode/i)).toBeInTheDocument();
     expect(screen.getByText("MP4 · WebM · MOV")).toBeInTheDocument();
     expect(screen.getByText(
-      `Up to ${VIDEO_CLIP_LIMITS.maxSourceSeconds}s · ${Math.round(VIDEO_CLIP_LIMITS.maxBytes / (1024 * 1024))} MB`
+      `Up to ${VIDEO_CLIP_LIMITS.maxSourceDurationSeconds}s · ${Math.round(VIDEO_CLIP_LIMITS.maxFileBytes / (1024 * 1024))} MB`
     )).toBeInTheDocument();
 
     const input = container.querySelector<HTMLInputElement>('input[type="file"]');
@@ -91,7 +99,7 @@ describe("VideoClipWorkspace", () => {
         const file = new File(["video"], "swing.mp4", { type: "video/mp4" });
         Object.defineProperty(file, "size", {
           configurable: true,
-          value: VIDEO_CLIP_LIMITS.maxBytes + 1
+          value: VIDEO_CLIP_LIMITS.maxFileBytes + 1
         });
         return file;
       },
@@ -131,6 +139,53 @@ describe("VideoClipWorkspace", () => {
     expect(screen.getByRole("slider", { name: /^End/i })).toHaveValue("10");
     expect(screen.getByRole("button", { name: "Analyze selected 10.0s" })).toBeEnabled();
     expect(screen.getByText("1920 × 1080 · 00:25.0")).toBeInTheDocument();
+  });
+
+  it("revokes a source and restores the uploader when metadata remains pending", async () => {
+    vi.useFakeTimers();
+    const props = createProps();
+    const { container } = render(<VideoClipWorkspace {...props} />);
+
+    chooseFile(container, new File(["video"], "metadata-stall.mp4", { type: "video/mp4" }));
+
+    expect(screen.getByText("Reading clip metadata…")).toBeInTheDocument();
+    expect(createObjectUrl).toHaveReturnedWith("blob:kb-form-1");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7_999);
+    });
+    expect(screen.getByText("Reading clip metadata…")).toBeInTheDocument();
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+
+    expect(revokeObjectUrl).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:kb-form-1");
+    expect(props.cancelClipAnalysis).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Show us three clear swings" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Reading this video's metadata took too long. It may be damaged or use an unsupported codec."
+    );
+  });
+
+  it("rejects an unsupported native source during metadata loading with explicit codec guidance", () => {
+    const props = createProps();
+    const { container } = render(<VideoClipWorkspace {...props} />);
+    chooseFile(container, new File(["video"], "unsupported.mov", { type: "video/quicktime" }));
+    const video = screen.getByLabelText("Selected source video") as HTMLVideoElement;
+    setMediaError(video, 4);
+
+    fireEvent.error(video);
+
+    expect(props.cancelClipAnalysis).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:kb-form-1");
+    expect(screen.getByRole("heading", { name: "Show us three clear swings" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This browser does not support the video's container or codec. Try H.264 MP4 or VP8/VP9 WebM."
+    );
   });
 
   it("keeps every edited trim window between four and ten seconds", async () => {
@@ -219,7 +274,7 @@ describe("VideoClipWorkspace", () => {
     expect(props.cancelClipAnalysis).toHaveBeenCalledOnce();
   });
 
-  it("cancels active analysis and returns to the uploader when the decoder errors", async () => {
+  it("preserves the editable clip and cancels once when native decoding fails during analysis", async () => {
     const user = userEvent.setup();
     const props = createProps();
     const { container } = render(<VideoClipWorkspace {...props} />);
@@ -230,13 +285,16 @@ describe("VideoClipWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Analyze selected 10.0s" }));
     expect(screen.getByRole("heading", { level: 1, name: "Reading your swing" })).toBeInTheDocument();
 
+    setMediaError(video, 3);
     fireEvent.error(video);
 
     expect(props.cancelClipAnalysis).toHaveBeenCalledOnce();
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:kb-form-1");
-    expect(screen.getByRole("heading", { name: "Show us three clear swings" })).toBeInTheDocument();
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { level: 1, name: "Select 4–10 seconds" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Selected source video")).toBe(video);
+    expect(screen.getByRole("button", { name: "Analyze selected 10.0s" })).toBeEnabled();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "This browser could not decode the selected video. Try an MP4 or WebM file."
+      "This video appears damaged or uses a codec this browser cannot decode."
     );
   });
 

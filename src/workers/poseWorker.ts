@@ -10,7 +10,9 @@ import type {
 } from "./poseProtocol";
 
 const TASKS_VERSION = "0.10.35";
-const WASM_BASE = `/vendor/mediapipe/${TASKS_VERSION}`;
+const WASM_BASE = import.meta.env.DEV
+  ? "/@kb-mediapipe"
+  : `/vendor/mediapipe/${TASKS_VERSION}`;
 const POSE_MODEL = "/models/pose_landmarker_full-float16-v1.task";
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
@@ -36,7 +38,9 @@ async function createEngine(): Promise<EngineDetails> {
     // MediaPipe clears ModuleFactory after initialization. A failed GPU setup
     // therefore needs a distinct module URL so the CPU retry executes the ESM
     // loader again instead of receiving the browser's cached module instance.
-    vision.wasmLoaderPath = `${WASM_BASE}/vision_wasm_module_internal.js?delegate=${delegate.toLowerCase()}`;
+    // A URL fragment keeps GPU and CPU module identities distinct without
+    // turning the public asset into a Vite source import during local dev.
+    vision.wasmLoaderPath = `${WASM_BASE}/vision_wasm_module_internal.js#delegate=${delegate.toLowerCase()}`;
     vision.wasmBinaryPath = `${WASM_BASE}/vision_wasm_module_internal.wasm`;
     return PoseLandmarker.createFromOptions(vision, {
       baseOptions: {
