@@ -7,8 +7,14 @@ Paths:
 - `docs/screenshots/kb-form-preview-desktop.jpg`
 - `docs/screenshots/kb-form-camera-setup.jpg`
 - `docs/screenshots/kb-form-camera-setup-mobile.jpg`
+- `docs/screenshots/kb-form-clip-upload.jpg`
+- `docs/screenshots/kb-form-clip-editor.jpg`
+- `docs/screenshots/kb-form-clip-editor-mobile.jpg`
+- `docs/screenshots/kb-form-clip-analyzing.jpg`
+- `docs/screenshots/kb-form-clip-result.jpg`
+- `docs/screenshots/kb-form-clip-result-mobile.jpg`
 
-These are browser captures of the implemented setup and camera-free preview states. They are used by the README and the public portfolio page. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
+These are browser captures of the implemented setup, camera-free preview, local clip editor, on-device analysis, and fail-closed result states at desktop and mobile widths. The README uses the representative desktop views. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
 
 ## Favicon
 

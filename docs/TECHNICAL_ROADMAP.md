@@ -13,11 +13,15 @@ Published results are identified as **Evidence**. Product and engineering choice
 
 ## Outcome
 
-The app now keeps live pose inference off the main thread and bounds camera work so latency cannot grow into a stale-frame queue. The current production path is:
+The app now keeps live and selected-clip pose inference off the main thread and bounds frame work so latency cannot grow into a stale-frame queue. The current production paths are:
 
 ```text
 camera -> requestVideoFrameCallback -> one transferable ImageBitmap
-       -> MediaPipe-only module Worker -> main-thread calibration/SwingAnalyzer
+       -> MediaPipe VIDEO mode (one pose) in a module Worker
+clip   -> 4–10 s window + normalized ROI -> crop/downscale to <=640 px
+       -> pause media time during each inference -> MediaPipe IMAGE mode (up to two poses)
+       -> accept body evidence only when exactly one pose is returned
+both   -> main-thread calibration/SwingAnalyzer
        -> overlay and latest-result React UI
 ```
 
@@ -29,13 +33,13 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 
 | Area | Current implementation | Status |
 | --- | --- | --- |
-| Inference isolation | A dedicated module Worker creates MediaPipe and calls synchronous `detectForVideo()`. Camera permission, React, canvas, calibration, and `SwingAnalyzer` stay on the main thread. | **Implemented** |
-| Frame scheduling and pressure | `requestVideoFrameCallback()` is primary, with a `requestAnimationFrame()` compatibility fallback. At most one `ImageBitmap` is being created or processed; callbacks arriving while busy are skipped, so there is no pending-frame queue. The transferred bitmap is closed by the Worker. | **Implemented** |
+| Inference isolation | A dedicated module Worker creates MediaPipe, calls synchronous `detectForVideo()` for live input, and uses stateless `detect()` for selected clip frames. Camera permission, React, canvas, calibration, and `SwingAnalyzer` stay on the main thread. | **Implemented** |
+| Frame scheduling and pressure | `requestVideoFrameCallback()` is primary, with a `requestAnimationFrame()` compatibility fallback. At most one `ImageBitmap` is being created or processed and there is no pending-frame queue. Live callbacks are skipped while busy; clip playback pauses during inference so device latency cannot create invalid source-time gaps. Every bitmap is closed by the Worker or by main-thread transfer-failure cleanup. | **Implemented** |
 | Reproducible versions | npm package and Worker version are exact `0.10.35`; install stages matching WASM from the locked package and verifies the Full model revision with SHA-256 before serving both from the app origin. Vite is exact `8.1.5`. | **Implemented** |
 | Delegate fallback | The Worker attempts GPU/WebGL first and retries the same pinned Full model on CPU. | **Implemented; qualification remains** |
 | Bundle loading | The Three.js movement scene is loaded with `React.lazy()` and `Suspense`, keeping it out of the initial application chunk. | **Implemented** |
-| Test foundation | Vitest, Testing Library, coverage thresholds, analyzer continuity/assessment tests, and application tests are configured. | **Implemented; corpus and browser tests remain** |
-| Initial assessment guard | Low tracking visibility, wrist visibility, or camera quality clears tracking state and returns `assessmentStatus: "unassessed"`; the UI consumes that explicit state. Clinical/rehab goals are absent. | **Implemented; broaden quality checks** |
+| Test foundation | Vitest, Testing Library, coverage thresholds, analyzer continuity/assessment tests, clip utility and aggregation tests, Worker-protocol hook tests, and application tests are configured. | **Implemented; real corpus and target-device tests remain** |
+| Initial assessment guard | Low tracking visibility, any missing required full-body landmark, wrist visibility, or camera quality clears tracking state and returns `assessmentStatus: "unassessed"`; clip results additionally require three completed reps, enough supported frames and coverage, and recurring evidence. Clinical/rehab goals are absent. | **Implemented; qualify thresholds and broaden capture checks** |
 
 ## Remaining architecture and product gaps
 
@@ -45,12 +49,12 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 | Runtime migration | Current package/WASM/model inputs are exact and mutually versioned. | MediaPipe 1.0.0 still needs an installable registry path plus side-by-side fixed-clip, browser, performance, and lifecycle qualification before adoption. |
 | Browser acceleration | The code calls the MediaPipe `GPU` delegate. | MediaPipe Vision's Web GPU delegate uses WebGL, not WebGPU. The app should not claim WebGPU acceleration for this path. |
 | Coordinate validity | Swing angles and wrist depth rely heavily on `worldLandmarks`; project docs call them meter-scale. | The Task API labels world coordinates in metres, while BlazePose's model card says its underlying z estimate comes from synthetic GHUM fitting and is up to scale rather than measured metric depth. Until swing-specific validation resolves that distinction, wrist z is a model-relative proxy—not measured bell depth or a basis for velocity, power, force, or load claims. |
-| Signal quality | The analyzer fails closed below tracking, wrist, or camera-quality thresholds and returns an explicit assessed/unassessed discriminant. | Broaden the gate with full-body/heels/feet framing, side-view alignment, blur/light, cadence, and single-person checks, then validate its abstention behavior. |
+| Signal quality | The analyzer fails closed below full-body, tracking, wrist, or camera-quality thresholds and returns an explicit assessed/unassessed discriminant. Clip IMAGE inference requests up to two poses and accepts evidence only when exactly one is returned. | Qualify the current gates and add direct blur/light, cadence, unsupported-style, and more robust scene-ambiguity checks; the two-pose result is an approximation, not proof that no bystander is present. |
 | Side-view landmarks | Left and right joint angles and wrists are averaged. | A side view commonly occludes the far side. Per-joint near-side selection based on visibility/stability should be evaluated instead of unconditional averaging. |
 | Coaching model | Goal/experience-dependent thresholds generate up to four internal per-frame feedback signals and a 0–100 score; the UI selects one current cue. Clinical/rehab modes are absent. | Thresholds are not yet validated against kettlebell ground truth or coach agreement. Add persistence, rep-level evidence, confidence, and a refractory period so the selected cue does not change too rapidly. |
 | Kettlebell path | Wrist midpoint is treated as the bell/hand path; entered bell mass only adjusts one cue's severity. | MediaPipe does not detect the kettlebell. The app cannot infer bell centre, mass, forces, torque, spinal load, or muscle activation from these landmarks. |
-| Testing and observability | Unit/application tests and coverage gates now exist. | Add deterministic clip regressions, worker protocol/cleanup tests, browser/device performance baselines, cue accuracy metrics, and privacy-egress tests. |
-| Privacy and supply chain | The locked WASM runtime and checksum-verified model are staged at install and served from the application origin. Production CSP no longer permits runtime/model fetches from jsDelivr or Google Storage. | Audit real browser egress and MediaPipe telemetry before claiming offline operation or first-party-only delivery; self-host or remove Google Fonts for a fully first-party static path. |
+| Testing and observability | Unit/application tests, clip scheduling/cleanup protocol tests, and coverage gates now exist. A local browser smoke run exercised upload, crop, analysis, cancellation controls, fail-closed results, focus restoration, 390 px reflow, and the loaded-asset inventory. | Add a versioned real-video regression corpus, target-device performance baselines, cue accuracy metrics, screen-reader testing, and production egress tests. |
+| Privacy and supply chain | Fonts, the locked WASM runtime, and the checksum-verified model are staged at install and served from the application origin. Production CSP permits only same-origin font, runtime, model, and connection paths; a local browser asset inventory found no external resource. | Audit production browser egress and MediaPipe telemetry before claiming offline operation or first-party-only delivery. |
 
 ## ADR-001: worker-owned inference with fresh-frame backpressure
 
@@ -58,12 +62,12 @@ Exact-pinned MediaPipe Pose Landmarker 0.10.35 with the Full model artifact at m
 
 ### Decision
 
-1. A dedicated module Worker owns MediaPipe initialization, `detectForVideo()`, delegate fallback, and model cleanup only.
+1. A dedicated module Worker owns MediaPipe initialization, live `detectForVideo()`, clip `detect()`, running-mode changes, delegate fallback, and model cleanup only.
 2. The main thread owns camera permission, video presentation, calibration, the lightweight/pure `SwingAnalyzer`, overlay/React rendering, and user controls.
-3. `HTMLVideoElement.requestVideoFrameCallback()` is the primary scheduler. Its monotonic callback timestamp is carried with the frame; motion is not derived from frame counts.
+3. `HTMLVideoElement.requestVideoFrameCallback()` is the primary scheduler. Its media timestamp is carried with the frame; motion is not derived from frame counts. Clip playback pauses while a sampled frame is inferred so slower hardware does not skip through the analyzer's continuity window.
 4. Enforce a queue invariant of **one `ImageBitmap` in flight and no pending bitmap**. `inFlight` covers bitmap creation plus worker processing.
 5. If another camera callback arrives while busy, skip that frame. Never append to or replace within a FIFO queue.
-6. Transfer the `ImageBitmap` to the Worker, which closes it in `finally`. An `OffscreenCanvas` or other worker-safe image source may be qualified later as a compatibility fallback.
+6. Transfer the `ImageBitmap` to the Worker, which closes it in `finally`. If transfer throws synchronously, close it on the main thread. An `OffscreenCanvas` or other worker-safe image source may be qualified later as a compatibility fallback.
 7. Return inference timing and the landmarks needed by the main-thread analyzer and overlay. Do not retain or transmit raw RGB frames.
 
 Conceptual scheduling contract:
@@ -80,6 +84,12 @@ onVideoFrame(frame):
 onWorkerResult(result):
   workerBusy = false
   analyze and present(result)
+
+onSelectedClipFrame(frame):
+  pause clip media time
+  crop and resize to <=640 px
+  transfer one bitmap and await its result
+  resume playback, or finish/cancel without a queue
 ```
 
 ### Why
@@ -163,7 +173,7 @@ Chrome, Safari, and Firefox have shipped WebGPU on an expanding set of platforms
 These changes belong in **ship now** or the cue must remain disabled:
 
 - Preserve the explicit assessed/unassessed result across future consumers. Do not show a numeric form score or “pattern looks clean” when required landmarks, framing, side angle, blur/light, or cadence fail.
-- Detect an unambiguous single-athlete scene rather than assuming `numPoses: 1` proves only one person is present. Qualify either a two-pose MediaPipe check or a lightweight person-count gate, including its latency cost.
+- The clip path's two-pose IMAGE check is implemented as a conservative approximation and still needs scene-ambiguity qualification. Add an equivalent qualified check for live input; never assume `numPoses: 1` proves only one person is visible.
 - State that world z, `depthTravel`, `spineStack`, projected anatomy, and muscle brightness are coaching proxies. They are not metric depth, lumbar curvature, EMG, force, power, torque, or injury-risk measurements.
 - Keep clinical/rehab modes absent until a clinician-defined protocol and population-specific validation exist.
 - Support only the declared two-hand hardstyle/shoulder-height protocol in the first validated release. Different swing styles have different timing and kinetics. [Swing-style study](https://pmc.ncbi.nlm.nih.gov/articles/PMC5455182/)

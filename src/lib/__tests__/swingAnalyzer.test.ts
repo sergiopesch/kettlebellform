@@ -208,6 +208,19 @@ describe("SwingAnalyzer tracking continuity", () => {
     expect(top.repCount).toBe(0);
   });
 
+  it("fails closed when one required full-body landmark is not visible", () => {
+    const analyzer = new SwingAnalyzer();
+    const frame = makeFrame(1000, { hipAngle: 120, wristY: 0.65 });
+    frame.landmarks[POSE.leftAnkle].visibility = 0.1;
+
+    const result = analyzer.update(frame, settings);
+
+    expect(result.assessmentStatus).toBe("unassessed");
+    expect(result.phase).toBe("waiting");
+    expect(result.score).toBe(0);
+    expect(result.feedback).toEqual([]);
+  });
+
   it("preserves completed session reps while resetting tracking after a gap", () => {
     const analyzer = new SwingAnalyzer();
     expect(runValidRep(analyzer).top.repCount).toBe(1);

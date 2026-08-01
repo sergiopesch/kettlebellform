@@ -63,6 +63,7 @@ const MAX_TRACKING_GAP_MS = 350;
 const MAX_REP_DURATION_MS = 3500;
 const MIN_TRACKING_VISIBILITY = 0.58;
 const MIN_WRIST_VISIBILITY = 0.55;
+const MIN_REQUIRED_LANDMARK_VISIBILITY = 0.3;
 const MIN_CAMERA_QUALITY = 0.45;
 const MIN_RECENT_MOTION_DEGREES = 4;
 const MIN_REP_INTERVAL_MS = 650;
@@ -96,6 +97,12 @@ const trackingIndices = [
   ...calibrationIndices,
   POSE.leftEar,
   POSE.rightEar,
+  POSE.leftWrist,
+  POSE.rightWrist
+];
+
+const requiredFullBodyIndices = [
+  ...calibrationIndices,
   POSE.leftWrist,
   POSE.rightWrist
 ];
@@ -212,9 +219,13 @@ export class SwingAnalyzer {
     metrics.repVelocity = Math.abs(hipVelocity);
 
     const wristVisibility = visibilityOf(frame.landmarks, [POSE.leftWrist, POSE.rightWrist]);
+    const fullBodyVisible = requiredFullBodyIndices.every(
+      (index) => (frame.landmarks[index]?.visibility ?? 0) >= MIN_REQUIRED_LANDMARK_VISIBILITY
+    );
     const trackingReady =
       metrics.visibility >= MIN_TRACKING_VISIBILITY &&
       wristVisibility >= MIN_WRIST_VISIBILITY &&
+      fullBodyVisible &&
       metrics.cameraQuality >= MIN_CAMERA_QUALITY;
     if (!trackingReady) {
       this.clearTrackingState();
@@ -602,8 +613,8 @@ function buildFeedback(
   if ((phase === "float" || phase === "lockout") && metrics.shoulderLift > 0.055) {
     add({
       id: "arm-lift",
-      label: "Let the bell float",
-      detail: "Hands are rising above shoulder level; reduce shoulder pull and let hip drive set the height.",
+      label: "Let your hands float",
+      detail: "Hands are rising above shoulder level; reduce shoulder pull and let hip drive set their height.",
       severity: metrics.shoulderLift > 0.1 || settings.bellKg > 24 ? "fix" : "watch",
       score: clamp(1 - metrics.shoulderLift / 0.18, 0, 1),
       joint: "shoulders"
@@ -614,7 +625,7 @@ function buildFeedback(
     add({
       id: "spine-stack",
       label: "Stack ribs over hips",
-      detail: "Avoid craning the neck or leaning back as the bell reaches the top.",
+      detail: "Avoid craning the neck or leaning back as your hands reach the top.",
       severity: metrics.spineStack < 0.45 ? "fix" : "watch",
       score: metrics.spineStack,
       joint: "spine"

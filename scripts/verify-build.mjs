@@ -8,6 +8,7 @@ const MIB = 1024 * KIB;
 const budgets = {
   initialJavaScript: 300 * KIB,
   individualJavaScript: 600 * KIB,
+  totalFonts: 160 * KIB,
   totalOutput: 32 * MIB
 };
 const MODEL_SHA256 = "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1";
@@ -76,6 +77,32 @@ if (sourceMaps.length > 0) {
   fail(`Production source maps were emitted: ${sourceMaps.map(({ file }) => relative(DIST_ROOT, file)).join(", ")}`);
 }
 
+const fontFiles = details.filter(({ file }) => /\.(?:woff2?|ttf|otf)$/i.test(file));
+const totalFonts = fontFiles.reduce((total, file) => total + file.size, 0);
+if (fontFiles.length === 0 || totalFonts > budgets.totalFonts) {
+  fail(
+    `Expected bounded self-hosted fonts; found ${fontFiles.length} files totaling ${formatBytes(totalFonts)} ` +
+      `(budget ${formatBytes(budgets.totalFonts)}).`
+  );
+}
+
+const forbiddenRuntimeOrigins = [
+  "fonts.googleapis.com",
+  "fonts.gstatic.com",
+  "cdn.jsdelivr.net",
+  "storage.googleapis.com"
+];
+const textDeploymentFiles = details.filter(({ file }) =>
+  /(?:\.html|\.css|\.js|_headers|_redirects)$/i.test(file)
+);
+for (const { file } of textDeploymentFiles) {
+  const contents = await readFile(file, "utf8");
+  const forbiddenOrigin = forbiddenRuntimeOrigins.find((origin) => contents.includes(origin));
+  if (forbiddenOrigin) {
+    fail(`Production output references forbidden runtime origin ${forbiddenOrigin} in ${relative(DIST_ROOT, file)}.`);
+  }
+}
+
 const JavaScriptFiles = details.filter(({ file }) => file.endsWith(".js"));
 const oversizedJavaScript = JavaScriptFiles.filter(
   ({ size }) => size > budgets.individualJavaScript
@@ -116,6 +143,10 @@ for (const header of [
     fail(`Deployment headers are missing ${header}`);
   }
 }
+const staticCsp = headers.split("\n").find((line) => line.includes("Content-Security-Policy:"));
+if (!staticCsp?.includes("connect-src 'self'") || /https?:\/\//.test(staticCsp)) {
+  fail("Static-host CSP must keep connections and runtime assets same-origin.");
+}
 
 const vercel = JSON.parse(await readFile(resolve("vercel.json"), "utf8"));
 if (vercel.outputDirectory !== "dist" || vercel.rewrites?.[0]?.destination !== "/index.html") {
@@ -137,6 +168,10 @@ for (const header of [
   if (!vercelHeaderNames.has(header)) {
     fail(`vercel.json is missing ${header}.`);
   }
+}
+const vercelCsp = globalVercelHeaders.find(({ key }) => key === "Content-Security-Policy")?.value;
+if (!vercelCsp?.includes("connect-src 'self'") || /https?:\/\//.test(vercelCsp)) {
+  fail("Vercel CSP must keep connections and runtime assets same-origin.");
 }
 
 console.log(
