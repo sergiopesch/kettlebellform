@@ -415,11 +415,6 @@ export function createRealtimeCueHandler({
       return realtimeErrorResponse(403, "Realtime voice cue request was not accepted.");
     }
 
-    const apiKey = environment.OPENAI_API_KEY?.trim();
-    if (!apiKey) {
-      return realtimeErrorResponse(503, "Realtime voice is temporarily unavailable.");
-    }
-    const privacySafeClientId = realtimePrivacySafeClientId(request, apiKey, environment);
     const token = request.headers.get(REALTIME_SESSION_TOKEN_HEADER);
     if (
       !token ||
@@ -427,6 +422,11 @@ export function createRealtimeCueHandler({
     ) {
       return realtimeErrorResponse(403, "Realtime voice cue request was not accepted.");
     }
+    const apiKey = environment.OPENAI_API_KEY?.trim();
+    if (!apiKey) {
+      return realtimeErrorResponse(503, "Realtime voice is temporarily unavailable.");
+    }
+    const privacySafeClientId = realtimePrivacySafeClientId(request, apiKey, environment);
     const session = verifyRealtimeSessionToken({
       token,
       privacySafeClientId,

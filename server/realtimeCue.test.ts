@@ -312,6 +312,21 @@ describe("Realtime cue HTTP boundary", () => {
     expect(runSideband).not.toHaveBeenCalled();
   });
 
+  it("rejects a missing capability before disclosing missing server configuration", async () => {
+    const runSideband = vi.fn(async () => undefined);
+    const handler = createRealtimeCueHandler({
+      environment: { KB_FORM_ALLOWED_ORIGINS: APP_ORIGIN },
+      rateLimiter: createProcessLocalBestEffortRateLimiter(),
+      runSideband
+    });
+
+    const response = await handler(cueRequest({ token: null }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Realtime voice cue request was not accepted." });
+    expect(runSideband).not.toHaveBeenCalled();
+  });
+
   it("enforces its rate lease and reports a bounded Retry-After", async () => {
     const runSideband = vi.fn(async () => undefined);
     const handler = createRealtimeCueHandler({
