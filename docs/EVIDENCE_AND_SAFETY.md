@@ -11,7 +11,7 @@ Labels used below:
 
 ## Product position and claims
 
-The product is a **general-wellness technique-awareness tool**. It may describe what the camera observed, how consistently a user performed the selected movement style, and whether tracking was reliable enough to comment.
+The product is a **general-wellness technique-awareness tool**. It may describe what a live camera or selected local clip showed, how consistently a user performed the selected movement style, and whether tracking was reliable enough to comment.
 
 | Claim or output | Product status |
 | --- | --- |
@@ -50,19 +50,19 @@ Do not turn angles reported by small laboratory cohorts into universal cutoffs. 
 
 The first release may assess five observable dimensions:
 
-1. **Phase timing:** relationship between hip extension, shoulder/wrist movement, and bell ascent; timing of the return hinge.
+1. **Phase timing:** relationship between hip extension and shoulder/wrist movement; timing of the return hinge.
 2. **Hip-dominant pattern:** relative hip and knee excursion for the selected style, without a universal hip:knee ratio.
 3. **Terminal position:** gross return toward the user's calibrated upright hip/knee/trunk position and absence of a marked back lean.
-4. **Bell path and arm behaviour:** smooth tracked arc, proximity during the backswing, and gross elbow extension when visible.
+4. **Wrist-path proxy and arm behaviour:** smooth tracked wrist arc and gross arm behaviour when visible. This is not a detected kettlebell trajectory.
 5. **Repeatability:** cadence and trajectory variation across at least three assessable repetitions.
 
 Novice learning research supports phase coordination and repetition consistency as useful coaching observations, but does not establish safety thresholds ([Beerse et al., 2025](https://pubmed.ncbi.nlm.nih.gov/36597768/)).
 
-Prefer separate dimension cards plus a **tracking-confidence** indicator. If a commercial requirement demands a composite, an initial hypothesis is 30% phase timing, 25% hip-dominant pattern, 20% terminal position, 15% bell path/arms, and 10% repeatability. **[Engineering inference]** These weights are not evidence-derived and must not be presented with clinical precision. Use broad bands and confidence rather than values such as `87/100`.
+Prefer separate dimension cards plus a **tracking-confidence** indicator. If a commercial requirement demands a composite, an initial hypothesis is 30% phase timing, 25% hip-dominant pattern, 20% terminal position, 15% wrist-path proxy/arms, and 10% repeatability. **[Engineering inference]** These weights are not evidence-derived and must not be presented with clinical precision. Use broad bands and confidence rather than values such as `87/100`.
 
 Feedback must state one high-confidence observation and one action at a time:
 
-- “The bell began rising before your hip drive on 4 of 5 reps. Try standing tall through the hips before the arms lift.”
+- “Your hands began rising before your hip drive on 4 of 5 reps. Try standing tall through the hips before the arms lift.”
 - “Your knees moved more than usual for the selected hip-hinge mode. Try sending the hips farther back.”
 - “You moved behind your calibrated upright position at the top. Finish tall instead of leaning back.”
 - “Your last three reps became less consistent. End the set or reduce the load.” **[Coaching inference]**
@@ -74,15 +74,29 @@ Standard body-pose keypoints cannot resolve segmental lumbar motion. They also c
 
 All gates run before rep scoring or coaching. Require:
 
-- Exactly one user, with the full body and kettlebell visible throughout the scoring window.
+- Exactly one user in the analysis frame, with the full body and kettlebell visible throughout the scoring window.
 - A supported camera view, stable camera, adequate light, and sufficient clear floor space.
-- Sufficient body-landmark and kettlebell-tracking confidence.
+- Sufficient body-landmark confidence. Kettlebell-specific cues remain unavailable until a qualified kettlebell detector exists.
 - No material occlusion, truncation, motion blur, or out-of-plane rotation for the requested metric.
 - A declared swing style and user-entered kettlebell mass.
 - At least three complete, assessable repetitions.
 - No current pain or stop symptom reported by the user.
 
 If a gate fails, provide the corrective setup instruction and return **“Unable to assess reliably”**. Do not emit a score, safety conclusion, or guessed cue. Camera distance and angle can drastically alter detection, and results from squats or other exercises cannot be assumed to transfer to swings ([2026 camera-position study](https://pmc.ncbi.nlm.nih.gov/articles/PMC12978916/)). **[Engineering inference]** Propagate landmark/object uncertainty through every derived metric and suppress feedback when uncertainty crosses a threshold established during validation.
+
+The current clip implementation asks MediaPipe for up to two poses and accepts body evidence only when exactly one pose is returned. It also requires every key full-body landmark to clear an individual visibility floor. This is a conservative person-count and framing approximation, not proof that no one else is present. The current model does not identify a kettlebell; wrist motion is labelled as a proxy and cannot establish bell identity, centre, load, path, or control.
+
+## Local clip workflow boundary
+
+The repository's local clip workflow applies these engineering controls:
+
+- Accept one browser-native, successfully decoded video source no longer than 120 seconds and no larger than 200 MiB. File extensions and reported MIME types are hints, not proof that a source is decodable.
+- Keep the complete source available for local preview, but analyze only one continuous window from 4 through 10 seconds and one normalized spatial frame selected within the source image. Require at least three complete assessable repetitions before emitting a pointer.
+- Do not upload, persist, transcode, or send the clip, its filename, frames, or derived results to analytics. The selection describes analysis boundaries; it does not create a new media file.
+- Crop and downscale each sampled frame to a maximum analysis dimension of 640 pixels, sample no faster than 15 frames per second, and allow at most one transferable `ImageBitmap` in flight. Do not build a frame queue.
+- Run MediaPipe in the existing dedicated Worker, release every transferred frame after processing, and discard results from cancelled, superseded, or mismatched jobs.
+
+These limits control resource use; they do not make a clip assessable. The selected window and frame must still contain the full user and kettlebell, sufficient visibility, and enough complete repetitions for the requested observation. Cropping cannot recover occluded or truncated evidence, and a user-selected interval can introduce selection bias. Sampling at no more than 15 fps can miss brief events, so output must describe only reliably observed patterns rather than claim frame-accurate biomechanics. Browser codec, orientation, seek, memory, and thermal behaviour require target-device validation.
 
 ## Screening, symptoms, and progression
 
@@ -124,11 +138,11 @@ Under the [EU AI Act](https://digital-strategy.ec.europa.eu/en/policies/regulato
 
 Privacy defaults:
 
-- Process camera frames on-device and ephemerally; do not upload or retain raw video by default. **[Engineering inference]**
+- Process live camera frames and selected clips on-device and ephemerally. The current clip workflow does not upload, retain, transcode, or add the source or derived results to analytics. **[Engineering inference]**
 - Crop or ignore faces, do not record audio, and never use face or gait for identity.
-- Store only derived metrics necessary for user-facing functionality.
+- Do not persist derived metrics unless a future user-facing feature has a defined purpose, retention period, and consent basis.
 - Require separate, granular opt-in consent for support uploads, research, or model improvement.
-- Provide export and deletion controls, a retention schedule, encryption, and a data-protection impact assessment where risk is high.
+- Any future persistence or transfer requires export and deletion controls, a retention schedule, encryption, and a data-protection impact assessment where risk is high.
 
 An image is not automatically special-category biometric data under UK GDPR, but technical processing for unique identification is. Pain, medical-screening answers, and inferred health status may be special-category health data. Ephemeral processing is still processing ([ICO special-category data](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/lawful-basis/special-category-data/what-is-special-category-data/); [ICO privacy by design and default](https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/accountability-and-governance/guide-to-accountability-and-governance/data-protection-by-design-and-by-default/)). The amended US [FTC Health Breach Notification Rule](https://www.ftc.gov/legal-library/browse/rules/health-breach-notification-rule) applies to many non-HIPAA consumer health apps and covers unauthorized disclosures as well as security breaches.
 
@@ -142,7 +156,7 @@ Target [WCAG 2.2 AA](https://www.w3.org/TR/WCAG22/) and its [mobile/non-web appl
 
 ## Validation protocol
 
-No camera-derived claim ships without validation of the exact production pipeline.
+No live-camera- or clip-derived claim ships without validation of the exact production pipeline.
 
 1. **Analytical validity:** compare synchronized app output with 3D marker-based motion capture and expert-labelled video for the supported swing, loads, views, devices, and environments.
 2. **Measurement performance:** report joint-angle mean absolute error and Bland–Altman bias/limits, phase-event timing error, rep-count precision/recall/F1, false-cue rate, calibration, test-retest reliability, and assessability/rejection coverage.
@@ -150,6 +164,7 @@ No camera-derived claim ships without validation of the exact production pipelin
 4. **User effect:** prospectively test comprehension, behaviour change, adverse events, and comparison with no feedback and qualified coaching before making effectiveness or equivalence claims.
 5. **Subgroups and conditions:** report performance across age, sex/gender, skin tone, body size/proportions, clothing, disability/prosthesis, lighting, phone/camera hardware, handedness, bell mass, and intended style. Do not generalize beyond represented groups.
 6. **Release controls:** version models, data, thresholds, and cue text; stage rollouts; monitor drift and complaints; preserve rollback and an auditable model card/change log.
+7. **Clip-path equivalence:** test supported containers, codecs, rotations, resolutions, trim boundaries, spatial-coordinate mapping, cancellation, memory, and thermals. Compare clip and live-path results from the same source frames and verify that no media or derived result leaves the device.
 
 Markerless measurement accuracy is task-, joint-, plane-, system-, and protocol-dependent. Recent reviews find promising reliability for some sagittal tasks but continuing accuracy and real-time-feedback gaps ([Yoma et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40526450/); [El-Rajab et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40416048/)). Dynamic-movement validation has reported sagittal errors of several degrees and much larger errors in some transverse-plane measures ([Edwards et al., 2025](https://pubmed.ncbi.nlm.nih.gov/39733226/)). Do not infer transverse rotation from monocular RGB or transfer validation from squats, jumps, or rehabilitation exercises to kettlebell swings.
 

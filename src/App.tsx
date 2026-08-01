@@ -8,6 +8,7 @@ import {
   ChevronsRight,
   CircleAlert,
   CircleCheck,
+  Film,
   Gauge,
   Info,
   LockKeyhole,
@@ -34,6 +35,8 @@ import type {
 const PoseScene = lazy(() =>
   import("./components/PoseScene").then((module) => ({ default: module.PoseScene }))
 );
+
+const VideoClipWorkspace = lazy(() => import("./components/VideoClipWorkspace"));
 
 const defaultSettings: CoachSettings = {
   heightCm: 178,
@@ -76,8 +79,16 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [movementOpen, setMovementOpen] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [clipOpen, setClipOpen] = useState(false);
   const previousSourceRef = useRef<"camera" | "demo" | null>(null);
+  const clipTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const restoreClipFocusRef = useRef(false);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openClip = useCallback(() => setClipOpen(true), []);
+  const closeClip = useCallback(() => {
+    restoreClipFocusRef.current = true;
+    setClipOpen(false);
+  }, []);
 
   const coach = usePoseCoach(settings, anatomyLayers);
   const sessionActive =
@@ -103,6 +114,13 @@ export default function App() {
     const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1_000);
     return () => window.clearInterval(timer);
   }, [paused, sessionActive]);
+
+  useEffect(() => {
+    if (!clipOpen && restoreClipFocusRef.current) {
+      restoreClipFocusRef.current = false;
+      clipTriggerRef.current?.focus();
+    }
+  }, [clipOpen]);
 
   const modelLabel = useMemo(() => {
     if (coach.modelStatus === "loading") {
@@ -131,7 +149,11 @@ export default function App() {
           <span>
             {coach.modelStatus === "error"
               ? modelLabel
-              : sessionActive
+              : coach.clipBusy
+                ? "Analyzing clip locally"
+                : clipOpen
+                  ? "Clip workspace · local"
+                  : sessionActive
                 ? requestingCamera
                 ? "Connecting camera"
                 : paused
@@ -168,6 +190,7 @@ export default function App() {
             type="button"
             aria-label="Open settings"
             aria-expanded={settingsOpen}
+            disabled={coach.clipBusy}
             onClick={() => setSettingsOpen(true)}
           >
             <Settings aria-hidden="true" />
@@ -177,7 +200,19 @@ export default function App() {
       </header>
 
       <main id="main-content">
-        {sessionActive ? (
+        {clipOpen ? (
+          <ErrorBoundary fallback={<div className="clip-load-fallback"><CircleAlert aria-hidden="true" /><strong>Clip workspace unavailable</strong><span>Reload the page and try again. Camera coaching is still available.</span></div>}>
+            <Suspense fallback={<div className="clip-load-fallback" role="status"><Film aria-hidden="true" /><strong>Opening clip workspace…</strong></div>}>
+              <VideoClipWorkspace
+                modelStatus={coach.modelStatus}
+                modelError={coach.modelError}
+                analyzeClip={coach.analyzeClip}
+                cancelClipAnalysis={coach.cancelClipAnalysis}
+                onClose={closeClip}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        ) : sessionActive ? (
           <LiveWorkspace
             coach={coach}
             attachVideo={coach.attachVideo}
@@ -196,6 +231,8 @@ export default function App() {
             setSettings={setSettings}
             movementOpen={movementOpen}
             setMovementOpen={setMovementOpen}
+            clipTriggerRef={clipTriggerRef}
+            onOpenClip={openClip}
           />
         )}
       </main>
@@ -220,13 +257,17 @@ function ReadyWorkspace({
   settings,
   setSettings,
   movementOpen,
-  setMovementOpen
+  setMovementOpen,
+  clipTriggerRef,
+  onOpenClip
 }: {
   coach: CoachController;
   settings: CoachSettings;
   setSettings: React.Dispatch<React.SetStateAction<CoachSettings>>;
   movementOpen: boolean;
   setMovementOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  clipTriggerRef: React.RefObject<HTMLButtonElement | null>;
+  onOpenClip: () => void;
 }) {
   const requesting = coach.mode === "requesting";
 
@@ -266,6 +307,10 @@ function ReadyWorkspace({
           <button className="button button-secondary" type="button" onClick={coach.startDemo}>
             <Play aria-hidden="true" />
             <span>Preview coaching</span>
+          </button>
+          <button ref={clipTriggerRef} className="button button-secondary" type="button" onClick={onOpenClip}>
+            <Film aria-hidden="true" />
+            <span>Analyze a clip</span>
           </button>
         </div>
 
