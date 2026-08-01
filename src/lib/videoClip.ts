@@ -4,14 +4,10 @@ const MEBIBYTE = 1024 * 1024;
 
 export const VIDEO_CLIP_LIMITS = {
   maxFileBytes: 200 * MEBIBYTE,
-  maxBytes: 200 * MEBIBYTE,
   maxSourceDurationSeconds: 120,
-  maxSourceSeconds: 120,
   maxSourceDimension: 4096,
   maxSourcePixels: 8_300_000,
-  maxTrimSeconds: 10,
   maxSelectionSeconds: 10,
-  minTrimSeconds: 4,
   minSelectionSeconds: 4,
   minNormalizedCropSize: 0.2,
   maxInferenceLongEdge: 640
@@ -124,6 +120,21 @@ export function validateVideoMetadata({ duration, width, height }: VideoClipMeta
   return null;
 }
 
+export function getVideoMediaErrorMessage(error: Pick<MediaError, "code"> | null): string {
+  switch (error?.code) {
+    case 1:
+      return "Video loading or playback was interrupted.";
+    case 2:
+      return "The video could not be read from this device.";
+    case 3:
+      return "This video appears damaged or uses a codec this browser cannot decode.";
+    case 4:
+      return "This browser does not support the video's container or codec. Try H.264 MP4 or VP8/VP9 WebM.";
+    default:
+      return "The browser could not decode this video.";
+  }
+}
+
 /**
  * Returns a bounded range. `changed` keeps the user's active handle anchored
  * whenever the source boundaries allow it.
@@ -138,8 +149,8 @@ export function clampTrimRange(
     return { start: 0, end: 0 };
   }
 
-  const maxSpan = Math.min(VIDEO_CLIP_LIMITS.maxTrimSeconds, duration);
-  const minSpan = Math.min(VIDEO_CLIP_LIMITS.minTrimSeconds, duration);
+  const maxSpan = Math.min(VIDEO_CLIP_LIMITS.maxSelectionSeconds, duration);
+  const minSpan = Math.min(VIDEO_CLIP_LIMITS.minSelectionSeconds, duration);
   const safeStart = Number.isFinite(start) ? clamp(start, 0, duration) : 0;
   const safeEnd = Number.isFinite(end)
     ? clamp(end, 0, duration)

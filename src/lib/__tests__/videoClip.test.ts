@@ -7,6 +7,7 @@ import {
   clampTrimRange,
   getCropPixels,
   getInferenceDimensions,
+  getVideoMediaErrorMessage,
   mapAnalysisToSource,
   validateVideoFile,
   validateVideoMetadata,
@@ -107,6 +108,21 @@ describe("validateVideoFile", () => {
   });
 });
 
+describe("getVideoMediaErrorMessage", () => {
+  it.each([
+    [1, "loading or playback was interrupted"],
+    [2, "could not be read"],
+    [3, "damaged or uses a codec"],
+    [4, "does not support"]
+  ])("maps native MediaError code %i to useful guidance", (code, message) => {
+    expect(getVideoMediaErrorMessage({ code })).toContain(message);
+  });
+
+  it("uses a safe fallback when the browser supplies no error code", () => {
+    expect(getVideoMediaErrorMessage(null)).toBe("The browser could not decode this video.");
+  });
+});
+
 describe("validateVideoMetadata", () => {
   it("accepts common landscape and rotated portrait metadata", () => {
     expect(validateVideoMetadata({ duration: 10, width: 1920, height: 1080 })).toBeNull();
@@ -192,8 +208,8 @@ describe("clampTrimRange", () => {
           const range = clampTrimRange(start, end, 20, changed);
           expect(range.start).toBeGreaterThanOrEqual(0);
           expect(range.end).toBeLessThanOrEqual(20);
-          expect(range.end - range.start).toBeGreaterThanOrEqual(VIDEO_CLIP_LIMITS.minTrimSeconds);
-          expect(range.end - range.start).toBeLessThanOrEqual(VIDEO_CLIP_LIMITS.maxTrimSeconds);
+          expect(range.end - range.start).toBeGreaterThanOrEqual(VIDEO_CLIP_LIMITS.minSelectionSeconds);
+          expect(range.end - range.start).toBeLessThanOrEqual(VIDEO_CLIP_LIMITS.maxSelectionSeconds);
         }
       }
     }

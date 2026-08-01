@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Landmark, NormalizedLandmark } from "@mediapipe/tasks-vision";
 import { drawPoseOverlay } from "../lib/drawing";
 import { createCalibrationProfile, SwingAnalyzer } from "../lib/swingAnalyzer";
-import { VIDEO_CLIP_LIMITS, getCropPixels, getInferenceDimensions } from "../lib/videoClip";
+import {
+  VIDEO_CLIP_LIMITS,
+  getCropPixels,
+  getInferenceDimensions,
+  getVideoMediaErrorMessage
+} from "../lib/videoClip";
 import type {
   AnalysisFrame,
   AnatomyLayerState,
@@ -72,7 +77,9 @@ const MIN_CALIBRATION_MS = 2_000;
 const LOST_POSE_TIMEOUT_MS = 750;
 const CLIP_SAMPLE_INTERVAL_MS = 1_000 / 15;
 const CLIP_TOTAL_TIMEOUT_MS = 30_000;
-const CLIP_STALL_TIMEOUT_MS = 6_000;
+const CLIP_DECODE_TIMEOUT_MS = 6_000;
+const CLIP_PROCESSING_TIMEOUT_MS = 10_000;
+const CLIP_END_TOLERANCE_SECONDS = 0.35;
 
 function isFinitePose(landmarks: NormalizedLandmark[] | null, worldLandmarks: Landmark[] | null): boolean {
   if (!landmarks || !worldLandmarks || landmarks.length < 33 || worldLandmarks.length < 33) {
@@ -610,11 +617,18 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       let lastSubmittedAt = Number.NEGATIVE_INFINITY;
       let active = true;
       let settled = false;
+      let frameProcessing = false;
+      let mediaEnded = false;
       let videoFrameHandle = 0;
       let animationFrameHandle = 0;
       let totalTimeoutHandle = 0;
-      let stallTimeoutHandle = 0;
+      let decodeTimeoutHandle = 0;
+      let processingTimeoutHandle = 0;
+      let rejectPendingSeek: ((error: Error) => void) | null = null;
+      let lastDecodedMediaTimeMs = Number.NEGATIVE_INFINITY;
+      let lastFallbackMediaTimeMs = Number.NEGATIVE_INFINITY;
       const previousPlaybackRate = video.playbackRate;
+      const previousMuted = video.muted;
 
       setClipBusy(true);
       onProgress({ stage: "preparing", progress: 0.03, processedFrames, expectedFrames });
@@ -626,7 +640,17 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           }
           cancelAnimationFrame(animationFrameHandle);
           window.clearTimeout(totalTimeoutHandle);
-          window.clearTimeout(stallTimeoutHandle);
+          window.clearTimeout(decodeTimeoutHandle);
+          window.clearTimeout(processingTimeoutHandle);
+          rejectPendingSeek?.(new DOMException("Clip analysis was cancelled.", "AbortError"));
+          rejectPendingSeek = null;
+          video.removeEventListener("ended", onMediaEnded);
+          video.removeEventListener("error", onMediaError);
+          videoFrameHandle = 0;
+          animationFrameHandle = 0;
+          totalTimeoutHandle = 0;
+          decodeTimeoutHandle = 0;
+          processingTimeoutHandle = 0;
         };
 
         const cleanup = (recoverTransport: boolean) => {
@@ -634,6 +658,7 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           clearSchedules();
           video.pause();
           video.playbackRate = previousPlaybackRate;
+          video.muted = previousMuted;
           if (activeClipRunRef.current?.jobId === jobId) {
             activeClipRunRef.current = null;
           }
@@ -670,11 +695,68 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           resolve({ samples, processedFrames, supportedFrames, expectedFrames });
         };
 
-        const resetStallTimeout = () => {
-          window.clearTimeout(stallTimeoutHandle);
-          stallTimeoutHandle = window.setTimeout(() => {
-            settleError(new Error("Video decoding stalled. Try a shorter MP4 or WebM clip."));
-          }, CLIP_STALL_TIMEOUT_MS);
+        const finishSelection = () => {
+          if (frameProcessing) {
+            return;
+          }
+          if (processedFrames === 0) {
+            settleError(new Error("No decodable video frames were found in the selected window."));
+            return;
+          }
+          settleSuccess();
+        };
+
+        const finishDecodedSelection = () => {
+          if (frameProcessing) {
+            return;
+          }
+          const lastDecodedMediaTime = Number.isFinite(lastDecodedMediaTimeMs)
+            ? lastDecodedMediaTimeMs / 1_000
+            : Number.NEGATIVE_INFINITY;
+          if (endTime - lastDecodedMediaTime > CLIP_END_TOLERANCE_SECONDS) {
+            settleError(
+              new Error(
+                "The video ended before the selected analysis window was complete. The file may be damaged or incomplete."
+              )
+            );
+            return;
+          }
+          finishSelection();
+        };
+
+        const clearDecodeTimeout = () => {
+          window.clearTimeout(decodeTimeoutHandle);
+          decodeTimeoutHandle = 0;
+        };
+
+        const armDecodeTimeout = () => {
+          if (decodeTimeoutHandle) {
+            return;
+          }
+          decodeTimeoutHandle = window.setTimeout(() => {
+            decodeTimeoutHandle = 0;
+            settleError(
+              new Error(
+                "This browser stopped producing frames from the video. Try a browser-compatible MP4 or WebM clip."
+              )
+            );
+          }, CLIP_DECODE_TIMEOUT_MS);
+        };
+
+        const clearProcessingTimeout = () => {
+          window.clearTimeout(processingTimeoutHandle);
+          processingTimeoutHandle = 0;
+        };
+
+        const armProcessingTimeout = (operation: InFlightFrame) => {
+          clearProcessingTimeout();
+          processingTimeoutHandle = window.setTimeout(() => {
+            processingTimeoutHandle = 0;
+            const message = operation.transferred
+              ? "The pose engine stopped responding while analyzing a video frame."
+              : "Extracting a video frame took too long.";
+            settleError(new Error(message));
+          }, CLIP_PROCESSING_TIMEOUT_MS);
         };
 
         activeClipRunRef.current = {
@@ -697,7 +779,9 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
             worker,
             transferred: false
           };
+          frameProcessing = true;
           inFlightRef.current = operation;
+          armProcessingTimeout(operation);
 
           let frame: ImageBitmap | null = null;
           try {
@@ -742,6 +826,7 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
                 rejectFrame(error instanceof Error ? error : new Error("The video frame could not be transferred."));
               }
             });
+            clearProcessingTimeout();
 
             if (!active) {
               return;
@@ -771,7 +856,6 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
               processedFrames,
               expectedFrames
             });
-            resetStallTimeout();
           } catch (error) {
             if (frame && !operation.transferred) {
               frame.close();
@@ -784,42 +868,112 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
                 error instanceof Error ? error : new Error("A video frame could not be analyzed.")
               );
             }
+          } finally {
+            clearProcessingTimeout();
+            frameProcessing = false;
           }
         };
 
-        const scheduleFrame = () => {
+        function onMediaEnded() {
           if (!active) {
+            return;
+          }
+          clearDecodeTimeout();
+          mediaEnded = true;
+          finishDecodedSelection();
+        }
+
+        function onMediaError() {
+          if (!active) {
+            return;
+          }
+          settleError(new Error(getVideoMediaErrorMessage(video.error)));
+        }
+
+        const scheduleFrame = () => {
+          if (!active || mediaEnded || video.ended) {
+            if (video.ended) {
+              onMediaEnded();
+            }
             return;
           }
           if (typeof HTMLVideoElement.prototype.requestVideoFrameCallback === "function") {
             videoFrameHandle = video.requestVideoFrameCallback((_now, metadata) => {
-              const mediaTimeMs = metadata.mediaTime * 1_000;
-              void handleDecodedFrame(mediaTimeMs);
+              videoFrameHandle = 0;
+              clearDecodeTimeout();
+              void handleDecodedFrame(metadata.mediaTime * 1_000, true);
             });
           } else {
             animationFrameHandle = requestAnimationFrame(() => {
-              void handleDecodedFrame(video.currentTime * 1_000);
+              animationFrameHandle = 0;
+              void handleDecodedFrame(video.currentTime * 1_000, false);
             });
           }
+          armDecodeTimeout();
         };
 
-        const handleDecodedFrame = async (mediaTimeMs: number) => {
+        const handleDecodedFrame = async (mediaTimeMs: number, isPresentedFrame: boolean) => {
           if (!active) {
             return;
           }
-          resetStallTimeout();
+          const previousMediaTimeMs = isPresentedFrame
+            ? lastDecodedMediaTimeMs
+            : lastFallbackMediaTimeMs;
+          const hasAdvanced =
+            Number.isFinite(mediaTimeMs) && mediaTimeMs > previousMediaTimeMs + 0.1;
+          if (!isPresentedFrame && !hasAdvanced && !video.ended) {
+            scheduleFrame();
+            return;
+          }
+          clearDecodeTimeout();
+          if (!Number.isFinite(mediaTimeMs)) {
+            scheduleFrame();
+            return;
+          }
+          if (isPresentedFrame) {
+            lastDecodedMediaTimeMs = Math.max(lastDecodedMediaTimeMs, mediaTimeMs);
+          } else {
+            if (
+              Number.isFinite(lastFallbackMediaTimeMs) &&
+              mediaTimeMs - lastFallbackMediaTimeMs > CLIP_END_TOLERANCE_SECONDS * 1_000
+            ) {
+              settleError(
+                new Error(
+                  "Video playback skipped too far between frames. The file may be damaged or playback may have been interrupted."
+                )
+              );
+              return;
+            }
+            lastFallbackMediaTimeMs = Math.max(lastFallbackMediaTimeMs, mediaTimeMs);
+          }
           const endTimeMs = endTime * 1_000;
           if (mediaTimeMs >= endTimeMs || video.ended) {
-            settleSuccess();
+            if (video.ended) {
+              onMediaEnded();
+            } else {
+              finishDecodedSelection();
+            }
+            return;
+          }
+          if (mediaTimeMs + 25 < startTime * 1_000) {
+            scheduleFrame();
             return;
           }
           if (mediaTimeMs - lastSubmittedAt >= CLIP_SAMPLE_INTERVAL_MS) {
             lastSubmittedAt = mediaTimeMs;
-            // Stop media time while inference runs so slower devices do not
-            // create >350 ms source-time gaps that invalidate rep tracking.
+            // Hold source time while one sampled frame is extracted and inferred.
+            // This keeps submitted timestamps within SwingAnalyzer's continuity
+            // window on slow devices without creating a pending-frame queue.
             video.pause();
             await submitFrame(mediaTimeMs);
             if (!active) {
+              return;
+            }
+            if (!isPresentedFrame) {
+              lastDecodedMediaTimeMs = Math.max(lastDecodedMediaTimeMs, mediaTimeMs);
+            }
+            if (mediaEnded || video.ended) {
+              onMediaEnded();
               return;
             }
             try {
@@ -834,29 +988,34 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
 
         const begin = async () => {
           try {
+            video.addEventListener("ended", onMediaEnded);
+            video.addEventListener("error", onMediaError);
             video.pause();
             if (Math.abs(video.currentTime - startTime) > 0.025) {
               await new Promise<void>((resolveSeek, rejectSeek) => {
                 let seekTimeout = 0;
+                let seekSettled = false;
                 const removeListeners = () => {
                   video.removeEventListener("seeked", onSeeked);
-                  video.removeEventListener("error", onError);
                   window.clearTimeout(seekTimeout);
+                  rejectPendingSeek = null;
+                };
+                const settleSeek = (callback: () => void) => {
+                  if (seekSettled) {
+                    return;
+                  }
+                  seekSettled = true;
+                  removeListeners();
+                  callback();
                 };
                 const onSeeked = () => {
-                  removeListeners();
-                  resolveSeek();
-                };
-                const onError = () => {
-                  removeListeners();
-                  rejectSeek(new Error("The selected point could not be decoded."));
+                  settleSeek(resolveSeek);
                 };
                 video.addEventListener("seeked", onSeeked, { once: true });
-                video.addEventListener("error", onError, { once: true });
+                rejectPendingSeek = (error) => settleSeek(() => rejectSeek(error));
                 seekTimeout = window.setTimeout(() => {
-                  removeListeners();
-                  rejectSeek(new Error("Seeking the selected video window timed out."));
-                }, CLIP_STALL_TIMEOUT_MS);
+                  settleSeek(() => rejectSeek(new Error("Seeking the selected video window timed out.")));
+                }, CLIP_DECODE_TIMEOUT_MS);
                 video.currentTime = startTime;
               });
             }
@@ -869,8 +1028,10 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
             totalTimeoutHandle = window.setTimeout(() => {
               settleError(new Error("Analysis took too long. Try a tighter frame or shorter selection."));
             }, CLIP_TOTAL_TIMEOUT_MS);
-            resetStallTimeout();
             await video.play();
+            if (!active) {
+              return;
+            }
             scheduleFrame();
           } catch (error) {
             settleError(
