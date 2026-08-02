@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { validateVoiceMediaProbe } from "./voice-media-probe.mjs";
 
 const ROOT = resolve("src/assets/coach-voices/v2");
 const MANIFEST_PATH = resolve("src/data/coachVoiceManifest.v2.json");
@@ -327,28 +328,17 @@ for (const profile of PROFILE_IDS) {
         path
       ])
     );
-    const streams = probe.streams ?? [];
-    const audioStreams = streams.filter((stream) => stream.codec_type === "audio");
-    const audio = audioStreams[0];
-    const durationMs = Math.round(Number(probe.format?.duration) * 1000);
-    const streamTagNames = Object.keys(audio?.tags ?? {});
-    const formatTagNames = Object.keys(probe.format?.tags ?? {});
-    if (
-      streams.length !== 1 ||
-      audioStreams.length !== 1 ||
-      audio.codec_name !== "mp3" ||
-      Number(audio.sample_rate) !== MASTERING.sampleRate ||
-      Number(audio.channels) !== MASTERING.channels ||
-      Number(audio.bit_rate) !== MASTERING.bitrateKbps * 1000 ||
-      probe.format?.format_name !== "mp3" ||
-      streamTagNames.length !== 0 ||
-      formatTagNames.some((name) => name !== "encoder") ||
-      durationMs !== entry.durationMs ||
-      durationMs < 350 ||
-      durationMs > 6500
-    ) {
-      fail(`Media properties failed for ${profile}/${cueId}.`);
+    const media = validateVoiceMediaProbe({
+      probe,
+      expectedDurationMs: entry.durationMs,
+      mastering: MASTERING
+    });
+    if (media.issues.length > 0) {
+      fail(
+        `Media properties failed for ${profile}/${cueId}: ${media.issues.join("; ")}.`
+      );
     }
+    const durationMs = entry.durationMs;
     const measured = loudness(path);
     if (
       measured.integrated < -17 ||

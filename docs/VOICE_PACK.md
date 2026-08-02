@@ -221,7 +221,7 @@ npm run verify:all
 - the exact 2 × 11 file set with no extra asset;
 - manifest phrase, path, byte length, and SHA-256 agreement;
 - unique hashes;
-- codec, stream count, sample rate, channels, duration, and file-size bounds;
+- codec, stream count, sample rate, channels, duration, and file-size bounds. The manifest duration remains deterministic; FFprobe may differ by up to three MPEG-2 Layer III frames (72 ms at 24 kHz) because FFmpeg releases report encoder delay/padding differently, so the verifier accepts only that bounded probe delta while exact bytes and SHA-256 remain mandatory;
 - integrated loudness and true peak;
 - model/licence/non-impersonation provenance fields;
 - per-cue duration, active-duration, pause-share, internal-pause-count, internal-pause-total, and loudness parity across the two profiles;
