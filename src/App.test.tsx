@@ -15,6 +15,8 @@ const controller = vi.hoisted(() => ({
   analyzeClip: vi.fn(),
   cancelClipAnalysis: vi.fn(),
   clipBusy: false,
+  liveGuidanceEpoch: 0,
+  livePoseState: "tracked",
   mode: "ready",
   source: null as "camera" | "demo" | null,
   analysis: null,
@@ -53,6 +55,8 @@ describe("KB FORM setup experience", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     controller.clipBusy = false;
+    controller.liveGuidanceEpoch = 0;
+    controller.livePoseState = "tracked";
     controller.mode = "ready";
     controller.source = null;
     controller.analysis = null;
@@ -73,21 +77,25 @@ describe("KB FORM setup experience", () => {
     expect(screen.getByRole("button", { name: "Start camera" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Preview coaching" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Analyze a clip" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Room view/i })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /Selfie view/i })).toHaveAttribute("aria-pressed", "false");
+    const roomView = screen.getByRole("button", { name: /Room view/i });
+    const selfieView = screen.getByRole("button", { name: /Selfie view/i });
+    expect(roomView).toHaveAttribute("aria-pressed", "true");
+    expect(roomView.querySelector(".selection-check")).toBeInTheDocument();
+    expect(selfieView).toHaveAttribute("aria-pressed", "false");
+    expect(selfieView.querySelector(".selection-check")).not.toBeInTheDocument();
     expect(screen.getByText(/Fill about 55–80% of the full frame/i)).toBeInTheDocument();
     expect(screen.queryByText(/2–3 m/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Voice framing coach/i })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /British male command coach/i })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /British male Maritime Command coach/i })).toHaveAttribute(
       "aria-pressed",
       "false"
     );
-    expect(screen.getByRole("button", { name: /British female command coach/i })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /British female Maritime Command coach/i })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
-    expect(screen.getByText(/browser sends only an allowlisted cue ID/i)).toBeInTheDocument();
-    expect(screen.getByText(/AI-generated speech, not a human coach recording/i)).toBeInTheDocument();
+    expect(screen.getByText(/downloads fixed coach audio from this site/i)).toBeInTheDocument();
+    expect(screen.getByText(/Original AI-generated character voices/i)).toBeInTheDocument();
     expect(screen.getByText(/Technique awareness, not a safety verdict/i)).toBeInTheDocument();
   });
 
@@ -195,14 +203,18 @@ describe("KB FORM setup experience", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const male = screen.getByRole("button", { name: /British male command coach/i });
-    const female = screen.getByRole("button", { name: /British female command coach/i });
+    const male = screen.getByRole("button", { name: /British male Maritime Command coach/i });
+    const female = screen.getByRole("button", { name: /British female Maritime Command coach/i });
     expect(female).toHaveAttribute("aria-pressed", "true");
+    expect(female.querySelector(".selection-check")).toBeInTheDocument();
+    expect(male.querySelector(".selection-check")).not.toBeInTheDocument();
 
     await user.click(male);
 
     expect(male).toHaveAttribute("aria-pressed", "true");
     expect(female).toHaveAttribute("aria-pressed", "false");
+    expect(male.querySelector(".selection-check")).toBeInTheDocument();
+    expect(female.querySelector(".selection-check")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Voice framing coach/i })).toHaveAttribute(
       "aria-pressed",
       "false"

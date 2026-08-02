@@ -4,26 +4,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSpokenFramingCoach } from "../useSpokenFramingCoach";
 import { FRAMING_CUES } from "../../lib/framingCoach";
 
-const realtimeFactory = vi.hoisted(() => ({
-  create: vi.fn()
+const packFactory = vi.hoisted(() => ({
+  create: vi.fn(),
+  supports: vi.fn()
+}));
+
+vi.mock("../../lib/coachVoicePackClient", () => ({
+  createCoachVoicePackClient: packFactory.create,
+  supportsCoachVoicePack: packFactory.supports
 }));
 
 type Deferred<T> = Readonly<{
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 }>;
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((onResolve) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
     resolve = onResolve;
+    reject = onReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
-vi.mock("../../lib/realtimeVoiceClient", () => ({
-  createRealtimeVoiceClient: realtimeFactory.create
-}));
+function packClient() {
+  return {
+    activate: vi.fn().mockResolvedValue(undefined),
+    speak: vi.fn().mockReturnValue(true),
+    cancel: vi.fn(),
+    deactivate: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined)
+  };
+}
 
 class UtteranceStub {
   text: string;
@@ -95,7 +110,8 @@ describe("useSpokenFramingCoach", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    realtimeFactory.create.mockReset();
+    packFactory.create.mockReset();
+    packFactory.supports.mockReset().mockReturnValue(false);
     now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
   });
@@ -113,21 +129,246 @@ describe("useSpokenFramingCoach", () => {
     act(() => vi.advanceTimersByTime(milliseconds));
   };
 
-  it("is opt-in, selects a local English voice, and debounces repeated corrections", () => {
+  it("loads the selected branded pack only after explicit opt-in", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({
+        cue: FRAMING_CUES.finding,
+        automatic: false,
+        sessionActive: false
+      })
+    );
+
+    expect(result.current.availability).toBe("ready");
+    expect(packFactory.create).not.toHaveBeenCalled();
+    act(() => result.current.toggle());
+    expect(client.activate).toHaveBeenCalledWith("female-command");
+    expect(result.current.transport).toBe("loading");
+
+    await act(async () => Promise.resolve());
+    expect(result.current.transport).toBe("pack");
+    expect(client.speak).toHaveBeenCalledWith({
+      id: "coach-on",
+      speech: "Voice framing coach on."
+    });
+  });
+
+  it("uses a profile selected before opt-in and announces later switches", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.selectProfile("male-command"));
+    expect(packFactory.create).not.toHaveBeenCalled();
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(client.activate).toHaveBeenCalledWith("male-command");
+
+    act(() => result.current.selectProfile("female-command"));
+    await act(async () => Promise.resolve());
+    expect(client.activate).toHaveBeenLastCalledWith("female-command");
+    expect(client.speak).toHaveBeenLastCalledWith({
+      id: "female-command-selected",
+      speech: "Female British coach selected."
+    });
+  });
+
+  it("does not let a stale profile activation win a rapid switch", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const female = deferred<void>();
+    const male = deferred<void>();
+    const client = packClient();
+    client.activate.mockImplementation((profile) =>
+      profile === "female-command" ? female.promise : male.promise
+    );
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    act(() => result.current.selectProfile("male-command"));
+    await act(async () => {
+      male.resolve(undefined);
+      await male.promise;
+    });
+    expect(result.current.transport).toBe("pack");
+    expect(result.current.selectedProfile).toBe("male-command");
+    expect(client.speak).toHaveBeenCalledWith({
+      id: "male-command-selected",
+      speech: "Male British coach selected."
+    });
+
+    await act(async () => {
+      female.resolve(undefined);
+      await female.promise;
+    });
+    expect(result.current.selectedProfile).toBe("male-command");
+    expect(client.speak).not.toHaveBeenCalledWith({
+      id: "coach-on",
+      speech: "Voice framing coach on."
+    });
+  });
+
+  it("stays off when disabled during a pending activation", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const activation = deferred<void>();
+    const client = packClient();
+    client.activate.mockReturnValue(activation.promise);
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    act(() => result.current.toggle());
+    expect(result.current.enabled).toBe(false);
+    expect(result.current.transport).toBe("off");
+    expect(client.cancel).toHaveBeenCalled();
+
+    await act(async () => {
+      activation.resolve(undefined);
+      await activation.promise;
+    });
+    expect(result.current.transport).toBe("off");
+    expect(client.speak).not.toHaveBeenCalled();
+  });
+
+  it("cancels on pagehide and reactivates an active session on pageshow", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    let visibility: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({
+        cue: FRAMING_CUES.finding,
+        automatic: false,
+        sessionActive: true
+      })
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    client.cancel.mockClear();
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(client.cancel).toHaveBeenCalled();
+    expect(client.deactivate).toHaveBeenCalled();
+    expect(result.current.transport).toBe("off");
+
+    visibility = "visible";
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    await act(async () => Promise.resolve());
+    expect(client.activate).toHaveBeenCalledTimes(2);
+    expect(result.current.transport).toBe("pack");
+  });
+
+  it("closes the one owned pack client only on unmount", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    const { result, unmount } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    act(() => result.current.toggle());
+    expect(client.close).not.toHaveBeenCalled();
+    expect(client.deactivate).toHaveBeenCalled();
+    unmount();
+    expect(client.cancel).toHaveBeenCalled();
+    expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it("remains activatable after the StrictMode effect cleanup cycle", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <StrictMode>{children}</StrictMode>
+    );
+    const { result } = renderHook(
+      () => useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false }),
+      { wrapper }
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(result.current.transport).toBe("pack");
+    expect(client.close).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a browser-reported local voice when pack activation fails", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    client.activate.mockRejectedValue(new Error("network"));
+    packFactory.create.mockReturnValue(client);
+    speechHarness([voice({ name: "Local", lang: "en-GB", localService: true })]);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(result.current.enabled).toBe(true);
+    expect(result.current.transport).toBe("device");
+    expect(result.current.speechStatus).toMatch(/browser-reported local English voice/i);
+    expect(result.current.speechStatus).not.toMatch(/private/i);
+    expect(client.deactivate).toHaveBeenCalled();
+  });
+
+  it("does not pretend that device fallback follows branded profile switches", () => {
+    const { synthesis } = speechHarness([
+      voice({ name: "Local", lang: "en-GB", localService: true })
+    ]);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    expect(result.current.transport).toBe("device");
+    expect(result.current.selectedProfile).toBe("female-command");
+    act(() => result.current.selectProfile("male-command"));
+    expect(result.current.selectedProfile).toBe("female-command");
+    expect(synthesis.speak).toHaveBeenCalledOnce();
+  });
+
+  it("keeps visual guidance when neither branded nor local speech can play", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    client.activate.mockRejectedValue(new Error("network"));
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.ready, automatic: true })
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(result.current.enabled).toBe(false);
+    expect(result.current.transport).toBe("visual");
+    expect(result.current.speechStatus).toMatch(/visual framing cues remain active/i);
+  });
+
+  it("uses only a local English fallback and debounces repeated corrections", () => {
     const remote = voice({ name: "Remote English", lang: "en-GB", localService: false });
     const local = voice({ name: "Local English", lang: "en-GB", localService: true });
     const { synthesis } = speechHarness([remote, local]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES["move-right"],
-      automatic: true
-    }));
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({
+        cue: FRAMING_CUES["move-right"],
+        automatic: true,
+        sessionActive: true
+      })
+    );
 
     expect(result.current.availability).toBe("ready");
-    expect(result.current.enabled).toBe(false);
-    expect(synthesis.speak).not.toHaveBeenCalled();
-
     act(() => result.current.toggle());
-    expect(result.current.enabled).toBe(true);
     expect(synthesis.speak).toHaveBeenCalledOnce();
     expect((vi.mocked(synthesis.speak).mock.calls[0][0] as SpeechSynthesisUtterance).voice).toBe(local);
 
@@ -140,20 +381,62 @@ describe("useSpokenFramingCoach", () => {
     expect((vi.mocked(synthesis.speak).mock.calls[1][0] as SpeechSynthesisUtterance).text).toBe(
       "Move a little right in the frame."
     );
-    advance(6_999);
-    expect(synthesis.speak).toHaveBeenCalledTimes(2);
-    advance(1);
+    advance(7_000);
     expect(synthesis.speak).toHaveBeenCalledTimes(3);
   });
 
-  it("refuses remote-only speech services while preserving visual cues", () => {
+  it("cancels queued automatic speech immediately when live pose evidence becomes unsafe", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const client = packClient();
+    packFactory.create.mockReturnValue(client);
+    const { result, rerender } = renderHook(
+      ({ guidanceEvidenceEpoch, guidanceEvidenceValid }) =>
+        useSpokenFramingCoach({
+          cue: FRAMING_CUES["move-right"],
+          automatic: true,
+          guidanceEvidenceEpoch,
+          guidanceEvidenceValid,
+          sessionActive: true
+        }),
+      { initialProps: { guidanceEvidenceEpoch: 0, guidanceEvidenceValid: true } }
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(client.speak).toHaveBeenCalledWith({
+      id: "coach-on",
+      speech: "Voice framing coach on."
+    });
+    client.cancel.mockClear();
+
+    advance(800);
+    expect(result.current.stableCue.id).toBe("move-right");
+    rerender({ guidanceEvidenceEpoch: 1, guidanceEvidenceValid: false });
+
+    expect(client.cancel).toHaveBeenCalled();
+    expect(result.current.stableCue.id).toBe("finding");
+    expect(result.current.canRepeat).toBe(false);
+    advance(7_000);
+    expect(client.speak).not.toHaveBeenCalledWith({
+      id: "move-right",
+      speech: "Move a little right in the frame."
+    });
+
+    rerender({ guidanceEvidenceEpoch: 1, guidanceEvidenceValid: true });
+    advance(800);
+    expect(client.speak).toHaveBeenCalledWith({
+      id: "move-right",
+      speech: "Move a little right in the frame."
+    });
+  });
+
+  it("refuses remote-only device speech while preserving visual cues", () => {
     const { synthesis } = speechHarness([
       voice({ name: "Remote", lang: "en-GB", localService: false })
     ]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.ready,
-      automatic: true
-    }));
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.ready, automatic: true })
+    );
 
     expect(result.current.availability).toBe("unavailable");
     act(() => result.current.toggle());
@@ -163,136 +446,39 @@ describe("useSpokenFramingCoach", () => {
     expect(result.current.stableCue.id).toBe("ready");
   });
 
-  it("does not cancel another page feature's speech before opt-in", () => {
+  it("waits for asynchronous local voice discovery when Web Audio is unavailable", () => {
+    const harness = speechHarness([]);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+    expect(result.current.availability).toBe("loading");
+
+    act(() =>
+      harness.setVoices([
+        voice({ name: "System voice", lang: "en-US", localService: true })
+      ])
+    );
+    expect(result.current.availability).toBe("ready");
+  });
+
+  it("does not cancel another feature's device speech before opt-in", () => {
     const { synthesis } = speechHarness([
       voice({ name: "Local", lang: "en-GB", localService: true })
     ]);
-
-    renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
+    renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
     expect(synthesis.cancel).not.toHaveBeenCalled();
     expect(synthesis.speak).not.toHaveBeenCalled();
   });
 
-  it("does not cancel the explicit enable confirmation before a session starts", () => {
-    const { synthesis } = speechHarness([
-      voice({ name: "Local", lang: "en-GB", localService: true })
-    ]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: false
-    }));
-    vi.mocked(synthesis.cancel).mockClear();
-
-    act(() => result.current.toggle());
-
-    expect(result.current.enabled).toBe(true);
-    expect(synthesis.speak).toHaveBeenCalledOnce();
-    expect(synthesis.cancel).not.toHaveBeenCalled();
-  });
-
-  it("waits for asynchronously discovered on-device voices", () => {
-    const harness = speechHarness([]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-    expect(result.current.availability).toBe("loading");
-
-    act(() => harness.setVoices([
-      voice({ name: "System voice", lang: "en-US", localService: true })
-    ]));
-    expect(result.current.availability).toBe("ready");
-  });
-
-  it("does not commit rapidly flapping left and right directions", () => {
-    speechHarness([voice({ name: "Local", lang: "en-GB", localService: true })]);
-    const { result, rerender } = renderHook(
-      ({ cue }) => useSpokenFramingCoach({ cue, automatic: false }),
-      { initialProps: { cue: FRAMING_CUES["move-left"] } }
-    );
-
-    advance(400);
-    rerender({ cue: FRAMING_CUES["move-right"] });
-    advance(400);
-    rerender({ cue: FRAMING_CUES["move-left"] });
-    advance(799);
-    expect(result.current.stableCue.id).toBe("finding");
-    advance(1);
-    expect(result.current.stableCue.id).toBe("move-left");
-  });
-
-  it("cancels only owned speech when coaching is suppressed, disabled, or unmounted", () => {
-    const { synthesis } = speechHarness([
-      voice({ name: "Local", lang: "en-GB", localService: true })
-    ]);
-    const { result, rerender, unmount } = renderHook(
-      ({ automatic, sessionActive }) => useSpokenFramingCoach({
-        cue: FRAMING_CUES["step-back"],
-        automatic,
-        sessionActive
-      }),
-      { initialProps: { automatic: false, sessionActive: false } }
-    );
-    act(() => result.current.toggle());
-    vi.mocked(synthesis.cancel).mockClear();
-
-    const confirmation = vi.mocked(synthesis.speak).mock.calls[0][0] as unknown as UtteranceStub;
-    const cancellationHandler = confirmation.onerror;
-    rerender({ automatic: false, sessionActive: true });
-    expect(synthesis.cancel).toHaveBeenCalledOnce();
-    act(() => cancellationHandler?.({ error: "canceled" }));
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.speechStatus).toBe("");
-
-    vi.mocked(synthesis.cancel).mockClear();
-    act(() => result.current.toggle());
-    expect(result.current.enabled).toBe(false);
-    expect(synthesis.cancel).not.toHaveBeenCalled();
-
-    rerender({ automatic: false, sessionActive: false });
-    act(() => result.current.toggle());
-    vi.mocked(synthesis.cancel).mockClear();
-    unmount();
-    expect(synthesis.cancel).toHaveBeenCalledOnce();
-  });
-
-  it("drops an unavailable or non-English local voice without a remote fallback", () => {
-    const harness = speechHarness([
-      voice({ name: "English", lang: "en-GB", localService: true }),
-      voice({ name: "French", lang: "fr-FR", localService: true })
-    ]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
-    act(() => result.current.toggle());
-    expect(result.current.enabled).toBe(true);
-    act(() => harness.setVoices([]));
-    expect(result.current.availability).toBe("unavailable");
-    expect(result.current.enabled).toBe(false);
-
-    act(() => harness.setVoices([
-      voice({ name: "French", lang: "fr-FR", localService: true })
-    ]));
-    expect(result.current.availability).toBe("unavailable");
-  });
-
-  it("resets debounced guidance and ready announcements across sessions", () => {
+  it("resets ready guidance across workout sessions", () => {
     const { synthesis } = speechHarness([
       voice({ name: "Local", lang: "en-GB", localService: true })
     ]);
     const { result, rerender } = renderHook(
-      ({ automatic, sessionActive }) => useSpokenFramingCoach({
-        cue: FRAMING_CUES.ready,
-        automatic,
-        sessionActive
-      }),
+      ({ automatic, sessionActive }) =>
+        useSpokenFramingCoach({ cue: FRAMING_CUES.ready, automatic, sessionActive }),
       { initialProps: { automatic: true, sessionActive: true } }
     );
 
@@ -300,9 +486,11 @@ describe("useSpokenFramingCoach", () => {
     (vi.mocked(synthesis.speak).mock.calls[0][0] as unknown as UtteranceStub).onend?.();
     advance(1_200);
     advance(1_800);
-    expect(vi.mocked(synthesis.speak).mock.calls.at(-1)?.[0]).toMatchObject({
-      text: FRAMING_CUES.ready.speech
-    });
+    expect(
+      vi.mocked(synthesis.speak).mock.calls.filter(
+        ([utterance]) => (utterance as SpeechSynthesisUtterance).text === FRAMING_CUES.ready.speech
+      )
+    ).toHaveLength(1);
 
     rerender({ automatic: false, sessionActive: false });
     expect(result.current.stableCue.id).toBe("finding");
@@ -316,17 +504,18 @@ describe("useSpokenFramingCoach", () => {
     ).toHaveLength(2);
   });
 
-  it("suppresses framing speech through an active rep and tracking-loss cooldown", () => {
+  it("suppresses framing speech during motion and its tracking cooldown", () => {
     const { synthesis } = speechHarness([
       voice({ name: "Local", lang: "en-GB", localService: true })
     ]);
     const { result, rerender } = renderHook(
-      ({ motionActive }) => useSpokenFramingCoach({
-        cue: FRAMING_CUES["move-right"],
-        automatic: true,
-        motionActive,
-        sessionActive: true
-      }),
+      ({ motionActive }) =>
+        useSpokenFramingCoach({
+          cue: FRAMING_CUES["move-right"],
+          automatic: true,
+          motionActive,
+          sessionActive: true
+        }),
       { initialProps: { motionActive: false } }
     );
 
@@ -347,450 +536,28 @@ describe("useSpokenFramingCoach", () => {
     expect(result.current.canRepeat).toBe(true);
   });
 
-  it("disables automatic retries after a synthesis failure", () => {
+  it("disables retries after a real local synthesis failure", () => {
     const { synthesis } = speechHarness([
       voice({ name: "Local", lang: "en-GB", localService: true })
     ]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES["move-left"],
-      automatic: true,
-      sessionActive: true
-    }));
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({
+        cue: FRAMING_CUES["move-left"],
+        automatic: true,
+        sessionActive: true
+      })
+    );
 
     act(() => result.current.toggle());
     (vi.mocked(synthesis.speak).mock.calls[0][0] as unknown as UtteranceStub).onend?.();
     advance(800);
     advance(2_200);
     const correction = vi.mocked(synthesis.speak).mock.calls[1][0] as unknown as UtteranceStub;
+    expect(correction.onerror).toBeTypeOf("function");
     act(() => correction.onerror?.({ error: "synthesis-failed" }));
     expect(result.current.enabled).toBe(false);
     expect(result.current.speechStatus).toMatch(/visual framing cues remain active/i);
     advance(7_000);
     expect(synthesis.speak).toHaveBeenCalledTimes(2);
-  });
-
-  it("fails safely when the device voice rejects an utterance", () => {
-    const { synthesis } = speechHarness([
-      voice({ name: "Local", lang: "en-GB", localService: true })
-    ]);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
-    act(() => result.current.toggle());
-    const utterance = vi.mocked(synthesis.speak).mock.calls[0][0] as unknown as UtteranceStub;
-    act(() => utterance.onerror?.({ error: "canceled" }));
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.speechStatus).toBe("");
-
-    act(() => utterance.onerror?.({ error: "synthesis-failed" }));
-    expect(result.current.enabled).toBe(false);
-    expect(result.current.speechStatus).toMatch(/visual framing cues remain active/i);
-  });
-
-  it("connects the selected profile over Realtime only after explicit opt-in", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
-    expect(result.current.availability).toBe("ready");
-    expect(client.connect).not.toHaveBeenCalled();
-
-    act(() => result.current.toggle());
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.transport).toBe("connecting");
-    await act(async () => Promise.resolve());
-
-    expect(client.connect).toHaveBeenCalledWith("female-command");
-    expect(client.speak).toHaveBeenCalledWith({
-      id: "coach-on",
-      speech: "Voice framing coach on."
-    });
-    expect(result.current.transport).toBe("realtime");
-  });
-
-  it("remains connectable after the StrictMode effect cleanup cycle", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const wrapper = ({ children }: PropsWithChildren) => (
-      <StrictMode>{children}</StrictMode>
-    );
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }), { wrapper });
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-
-    expect(client.connect).toHaveBeenCalledWith("female-command");
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.transport).toBe("realtime");
-  });
-
-  it("closes the old Realtime session before switching voice profiles", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const closing = deferred<void>();
-    const femaleClient = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    const maleClient = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create
-      .mockReturnValueOnce(femaleClient)
-      .mockReturnValueOnce(maleClient);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    femaleClient.cancel.mockClear();
-    femaleClient.close.mockClear();
-    act(() => result.current.selectProfile("male-command"));
-    await act(async () => Promise.resolve());
-
-    expect(femaleClient.cancel).toHaveBeenCalledOnce();
-    expect(femaleClient.close).toHaveBeenCalledOnce();
-    expect(femaleClient.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      femaleClient.close.mock.invocationCallOrder[0]
-    );
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-    expect(maleClient.connect).not.toHaveBeenCalled();
-    expect(result.current.transport).toBe("connecting");
-
-    await act(async () => {
-      closing.resolve(undefined);
-      await closing.promise;
-    });
-
-    expect(maleClient.connect).toHaveBeenCalledWith("male-command");
-    expect(maleClient.speak).toHaveBeenCalledWith({
-      id: "male-command-selected",
-      speech: "Male British coach selected."
-    });
-    expect(result.current.selectedProfile).toBe("male-command");
-    expect(result.current.transport).toBe("realtime");
-  });
-
-  it("cancels and closes Realtime immediately when the coach is disabled", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const closing = deferred<void>();
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: true
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    client.cancel.mockClear();
-    client.close.mockClear();
-
-    act(() => result.current.disable());
-
-    expect(client.cancel).toHaveBeenCalledOnce();
-    expect(client.close).toHaveBeenCalledOnce();
-    expect(client.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      client.close.mock.invocationCallOrder[0]
-    );
-    expect(result.current.enabled).toBe(false);
-    expect(result.current.transport).toBe("off");
-
-    await act(async () => {
-      closing.resolve(undefined);
-      await closing.promise;
-    });
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-  });
-
-  it("finishes disabling when a Realtime client throws synchronously during close", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(() => {
-        throw new Error("faulty client close");
-      }),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: true
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-
-    expect(() => act(() => result.current.disable())).not.toThrow();
-    expect(client.cancel).toHaveBeenCalled();
-    expect(client.close).toHaveBeenCalledOnce();
-    expect(result.current.enabled).toBe(false);
-    expect(result.current.transport).toBe("off");
-  });
-
-  it("closes on session end and waits for bounded cleanup before a session restart", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const closing = deferred<void>();
-    const firstClient = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    const nextClient = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create
-      .mockReturnValueOnce(firstClient)
-      .mockReturnValueOnce(nextClient);
-    const { result, rerender } = renderHook(
-      ({ sessionActive }) => useSpokenFramingCoach({
-        cue: FRAMING_CUES.finding,
-        automatic: false,
-        sessionActive
-      }),
-      { initialProps: { sessionActive: true } }
-    );
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    firstClient.cancel.mockClear();
-    firstClient.close.mockClear();
-
-    rerender({ sessionActive: false });
-
-    expect(firstClient.cancel).toHaveBeenCalled();
-    expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      firstClient.close.mock.invocationCallOrder[0]
-    );
-    expect(result.current.transport).toBe("off");
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-
-    act(() => result.current.selectProfile("male-command"));
-    await act(async () => Promise.resolve());
-    expect(result.current.selectedProfile).toBe("male-command");
-    expect(result.current.transport).toBe("off");
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-
-    rerender({ sessionActive: true });
-    await act(async () => Promise.resolve());
-    expect(result.current.transport).toBe("connecting");
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      closing.resolve(undefined);
-      await closing.promise;
-    });
-
-    expect(realtimeFactory.create).toHaveBeenCalledTimes(2);
-    expect(nextClient.connect).toHaveBeenCalledWith("male-command");
-    expect(result.current.transport).toBe("realtime");
-  });
-
-  it("closes on visibility loss and waits for cleanup before reconnecting", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    let visibility: DocumentVisibilityState = "visible";
-    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-    const closing = deferred<void>();
-    const firstClient = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    const nextClient = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create
-      .mockReturnValueOnce(firstClient)
-      .mockReturnValueOnce(nextClient);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: true
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    firstClient.cancel.mockClear();
-    firstClient.close.mockClear();
-
-    visibility = "hidden";
-    act(() => document.dispatchEvent(new Event("visibilitychange")));
-
-    expect(firstClient.cancel).toHaveBeenCalled();
-    expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      firstClient.close.mock.invocationCallOrder[0]
-    );
-    expect(result.current.transport).toBe("off");
-
-    act(() => result.current.selectProfile("male-command"));
-    await act(async () => Promise.resolve());
-    expect(result.current.selectedProfile).toBe("male-command");
-    expect(result.current.transport).toBe("off");
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-
-    visibility = "visible";
-    act(() => document.dispatchEvent(new Event("visibilitychange")));
-    await act(async () => Promise.resolve());
-    expect(result.current.transport).toBe("connecting");
-    expect(realtimeFactory.create).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      closing.resolve(undefined);
-      await closing.promise;
-    });
-
-    expect(realtimeFactory.create).toHaveBeenCalledTimes(2);
-    expect(nextClient.connect).toHaveBeenCalledWith("male-command");
-    expect(result.current.transport).toBe("realtime");
-  });
-
-  it("closes on pagehide even when the visibility state has not changed", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const closing = deferred<void>();
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: true
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    client.cancel.mockClear();
-    client.close.mockClear();
-
-    act(() => window.dispatchEvent(new Event("pagehide")));
-
-    expect(client.cancel).toHaveBeenCalled();
-    expect(client.close).toHaveBeenCalledOnce();
-    expect(client.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      client.close.mock.invocationCallOrder[0]
-    );
-    expect(result.current.transport).toBe("off");
-
-    await act(async () => {
-      closing.resolve(undefined);
-      await closing.promise;
-    });
-  });
-
-  it("cancels and closes the owned Realtime client during unmount", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const closing = deferred<void>();
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(() => closing.promise),
-      connect: vi.fn().mockResolvedValue(undefined),
-      speak: vi.fn().mockReturnValue(true)
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result, unmount } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false,
-      sessionActive: true
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-    client.cancel.mockClear();
-    client.close.mockClear();
-
-    unmount();
-
-    expect(client.cancel).toHaveBeenCalledOnce();
-    expect(client.close).toHaveBeenCalledOnce();
-    expect(client.cancel.mock.invocationCallOrder[0]).toBeLessThan(
-      client.close.mock.invocationCallOrder[0]
-    );
-
-    closing.resolve(undefined);
-    await closing.promise;
-  });
-
-  it("falls back to a local English voice when Realtime cannot connect", async () => {
-    vi.stubGlobal("RTCPeerConnection", class {});
-    vi.stubGlobal("fetch", vi.fn());
-    const { synthesis } = speechHarness([
-      voice({ name: "Local", lang: "en-GB", localService: true })
-    ]);
-    const client = {
-      cancel: vi.fn(),
-      close: vi.fn(),
-      connect: vi.fn().mockRejectedValue(new Error("network")),
-      speak: vi.fn()
-    };
-    realtimeFactory.create.mockReturnValue(client);
-    const { result } = renderHook(() => useSpokenFramingCoach({
-      cue: FRAMING_CUES.finding,
-      automatic: false
-    }));
-
-    act(() => result.current.toggle());
-    await act(async () => Promise.resolve());
-
-    expect(client.close).toHaveBeenCalledOnce();
-    expect(result.current.enabled).toBe(true);
-    expect(result.current.transport).toBe("device");
-    expect(result.current.speechStatus).toMatch(/private on-device English voice/i);
-    expect(synthesis.speak).not.toHaveBeenCalled();
   });
 });

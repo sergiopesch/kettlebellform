@@ -14,6 +14,7 @@ const WASM_BASE = import.meta.env.DEV
   ? "/@kb-mediapipe"
   : `/vendor/mediapipe/${TASKS_VERSION}`;
 const POSE_MODEL = "/models/pose_landmarker_full-float16-v1.task";
+const MAX_SCENE_POSES = 2;
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
 let landmarker: PoseLandmarker | null = null;
@@ -48,7 +49,7 @@ async function createEngine(): Promise<EngineDetails> {
         delegate
       },
       runningMode: "VIDEO",
-      numPoses: 1,
+      numPoses: MAX_SCENE_POSES,
       minPoseDetectionConfidence: 0.66,
       minPosePresenceConfidence: 0.66,
       minTrackingConfidence: 0.68,
@@ -106,14 +107,14 @@ async function configureForFrame(message: PoseWorkerFrameRequest): Promise<void>
     if (activeChannel !== "clip") {
       // Clip frames are intentionally independent. IMAGE mode avoids carrying
       // MediaPipe's temporal tracking state across seeks, uploads, or jobs.
-      await landmarker.setOptions({ runningMode: "IMAGE", numPoses: 2 });
+      await landmarker.setOptions({ runningMode: "IMAGE", numPoses: MAX_SCENE_POSES });
     }
   } else if (activeChannel !== "live") {
-    await landmarker.setOptions({ runningMode: "VIDEO", numPoses: 1 });
+    await landmarker.setOptions({ runningMode: "VIDEO", numPoses: MAX_SCENE_POSES });
   } else if (activeJobId !== null && activeJobId !== message.jobId) {
     // Force a tracker reset when a new camera stream reuses this Worker.
-    await landmarker.setOptions({ runningMode: "IMAGE", numPoses: 1 });
-    await landmarker.setOptions({ runningMode: "VIDEO", numPoses: 1 });
+    await landmarker.setOptions({ runningMode: "IMAGE", numPoses: MAX_SCENE_POSES });
+    await landmarker.setOptions({ runningMode: "VIDEO", numPoses: MAX_SCENE_POSES });
   }
 
   activeChannel = message.channel;

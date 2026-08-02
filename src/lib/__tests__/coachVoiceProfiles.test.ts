@@ -17,15 +17,15 @@ describe("coach voice profiles", () => {
       "male-command",
       "female-command"
     ]);
-    expect(new Set(COACH_VOICE_PROFILES.map(({ openAIVoice }) => openAIVoice)).size).toBe(2);
+    expect(new Set(COACH_VOICE_PROFILES.map(({ characterName }) => characterName)).size).toBe(2);
 
     for (const profile of COACH_VOICE_PROFILES) {
       expect(profile.label).toMatch(/British (male|female)/i);
+      expect(profile.label).toMatch(/Maritime Command/i);
       expect(profile.accessibleLabel).toMatch(/AI-generated/i);
       expect(profile.aiDisclosure).toMatch(/AI-generated/i);
-      expect(profile.aiDisclosure).not.toMatch(/custom voice/i);
-      expect(profile.instructions).toMatch(/British English/i);
-      expect(profile.instructions).toMatch(/Never shout/i);
+      expect(profile.aiDisclosure).toMatch(/not affiliated/i);
+      expect(profile.packId).toBe("maritime-command-v2");
     }
   });
 
@@ -33,8 +33,8 @@ describe("coach voice profiles", () => {
     expect(isVoiceProfileId("male-command")).toBe(true);
     expect(isVoiceProfileId("female-command")).toBe(true);
     expect(isVoiceProfileId("custom-command")).toBe(false);
-    expect(getCoachVoiceProfile("male-command").openAIVoice).toBe("cedar");
-    expect(getCoachVoiceProfile("female-command").openAIVoice).toBe("marin");
+    expect(getCoachVoiceProfile("male-command").characterName).toBe("Harbour");
+    expect(getCoachVoiceProfile("female-command").characterName).toBe("Crown");
   });
 
   it("keeps every framing message byte-for-byte aligned with the visual cue", () => {

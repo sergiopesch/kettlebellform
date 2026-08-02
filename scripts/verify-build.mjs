@@ -9,6 +9,7 @@ const budgets = {
   initialJavaScript: 300 * KIB,
   individualJavaScript: 600 * KIB,
   totalFonts: 160 * KIB,
+  totalCoachVoiceAudio: 2 * MIB,
   totalOutput: 32 * MIB
 };
 const MODEL_SHA256 = "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1";
@@ -66,6 +67,41 @@ if (modelHash !== MODEL_SHA256) {
   fail(`Pose model integrity check failed: received ${modelHash}.`);
 }
 
+const voiceManifest = JSON.parse(
+  await readFile(resolve("src/data/coachVoiceManifest.v2.json"), "utf8")
+);
+if (voiceManifest.packId !== "maritime-command-v2") {
+  fail(`Unexpected coach voice pack: ${voiceManifest.packId ?? "missing"}.`);
+}
+const expectedVoiceHashes = new Set(
+  Object.values(voiceManifest.profiles).flatMap((profile) =>
+    Object.values(profile).map(({ sha256 }) => sha256)
+  )
+);
+const coachVoiceFiles = details.filter(({ file }) => file.endsWith(".mp3"));
+const totalCoachVoiceAudio = coachVoiceFiles.reduce((total, file) => total + file.size, 0);
+const emittedVoiceHashes = new Set(
+  await Promise.all(
+    coachVoiceFiles.map(async ({ file }) =>
+      createHash("sha256").update(await readFile(file)).digest("hex")
+    )
+  )
+);
+if (
+  expectedVoiceHashes.size !== 22 ||
+  coachVoiceFiles.length !== 22 ||
+  emittedVoiceHashes.size !== 22 ||
+  [...expectedVoiceHashes].some((hash) => !emittedVoiceHashes.has(hash))
+) {
+  fail("Production output must contain the exact 22-file verified coach voice pack.");
+}
+if (totalCoachVoiceAudio > budgets.totalCoachVoiceAudio) {
+  fail(
+    `Coach voice audio is ${formatBytes(totalCoachVoiceAudio)}; budget is ` +
+      `${formatBytes(budgets.totalCoachVoiceAudio)}.`
+  );
+}
+
 if (totalOutput > budgets.totalOutput) {
   fail(
     `Build output is ${formatBytes(totalOutput)}; budget is ${formatBytes(budgets.totalOutput)}.`
@@ -87,6 +123,9 @@ if (fontFiles.length === 0 || totalFonts > budgets.totalFonts) {
 }
 
 const forbiddenRuntimeOrigins = [
+  "api.openai.com",
+  "huggingface.co",
+  "hf.space",
   "fonts.googleapis.com",
   "fonts.gstatic.com",
   "cdn.jsdelivr.net",
@@ -100,6 +139,9 @@ for (const { file } of textDeploymentFiles) {
   const forbiddenOrigin = forbiddenRuntimeOrigins.find((origin) => contents.includes(origin));
   if (forbiddenOrigin) {
     fail(`Production output references forbidden runtime origin ${forbiddenOrigin} in ${relative(DIST_ROOT, file)}.`);
+  }
+  if (contents.includes("/api/realtime-session") || contents.includes("/api/realtime-cue")) {
+    fail(`Production output references a retired Realtime route in ${relative(DIST_ROOT, file)}.`);
   }
 }
 
@@ -148,14 +190,35 @@ if (!staticCsp?.includes("connect-src 'self'") || /https?:\/\//.test(staticCsp))
   fail("Static-host CSP must keep connections and runtime assets same-origin.");
 }
 
+function staticCachePolicy(pathPattern) {
+  const escapedPattern = pathPattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const section = headers.match(
+    new RegExp(`(?:^|\\n)${escapedPattern}\\n((?:[ \\t]+[^\\n]+\\n?)*)`, "u")
+  )?.[1];
+  return section
+    ?.split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("Cache-Control:"));
+}
+
+if (staticCachePolicy("/assets/*") !== "Cache-Control: public, max-age=31536000, immutable") {
+  fail("Static-host hashed assets must use the immutable cache policy.");
+}
+if (staticCachePolicy("/index.html") !== "Cache-Control: public, max-age=0, must-revalidate") {
+  fail("Static-host application HTML must revalidate.");
+}
+for (const pathPattern of ["/models/*", "/vendor/*"]) {
+  if (staticCachePolicy(pathPattern) !== "Cache-Control: public, max-age=0, must-revalidate") {
+    fail(`Static-host fixed-path assets must revalidate: ${pathPattern}`);
+  }
+}
+
 const vercel = JSON.parse(await readFile(resolve("vercel.json"), "utf8"));
 if (vercel.outputDirectory !== "dist" || vercel.rewrites?.[0]?.destination !== "/index.html") {
   fail("vercel.json must publish dist and retain the SPA fallback.");
 }
-for (const functionPath of ["api/realtime-session.ts", "api/realtime-cue.ts"]) {
-  if (vercel.functions?.[functionPath]?.maxDuration !== 15) {
-    fail(`vercel.json must retain the bounded duration for ${functionPath}.`);
-  }
+if (vercel.functions !== undefined) {
+  fail("The static voice deployment must not define serverless functions.");
 }
 
 const globalVercelHeaders = vercel.headers?.find(({ source }) => source === "/(.*)")?.headers;
@@ -179,8 +242,26 @@ if (!vercelCsp?.includes("connect-src 'self'") || /https?:\/\//.test(vercelCsp))
   fail("Vercel CSP must keep connections and runtime assets same-origin.");
 }
 
+function vercelCachePolicy(source) {
+  return vercel.headers
+    ?.find((entry) => entry.source === source)
+    ?.headers?.find(({ key }) => key === "Cache-Control")?.value;
+}
+
+if (vercelCachePolicy("/assets/(.*)") !== "public, max-age=31536000, immutable") {
+  fail("Vercel hashed assets must use the immutable cache policy.");
+}
+if (vercelCachePolicy("/index.html") !== "public, max-age=0, must-revalidate") {
+  fail("Vercel application HTML must revalidate.");
+}
+for (const source of ["/models/(.*)", "/vendor/(.*)"]) {
+  if (vercelCachePolicy(source) !== "public, max-age=0, must-revalidate") {
+    fail(`Vercel fixed-path assets must revalidate: ${source}`);
+  }
+}
+
 console.log(
   `[build:verify] OK — entry ${formatBytes(initialScriptSize)}, largest JS ${formatBytes(
     Math.max(...JavaScriptFiles.map(({ size }) => size))
-  )}, output ${formatBytes(totalOutput)}.`
+  )}, voice pack ${formatBytes(totalCoachVoiceAudio)}, output ${formatBytes(totalOutput)}.`
 );

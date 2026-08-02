@@ -7,14 +7,14 @@
     "moduleResolution": "Bundler",
     "allowSyntheticDefaultImports": true,
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
   "include": [
     "vite.config.ts",
-    "api/**/*.ts",
-    "server/**/*.ts",
     "src/lib/coachVoicePolicy.ts"
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "platform": "macos-aarch64",
+  "minimumMacosVersion": "14.0",
+  "uv": {
+    "launcher": "/opt/homebrew/bin/uv",
+    "resolvedPath": "/opt/homebrew/Cellar/uv/0.11.28/bin/uv",
+    "version": "0.11.28",
+    "sha256": "daf24253d9c4fa42e4e9ac24e77d2b9e6d3bd1fee47e56e0bb8caafa69903dd8"
+  },
+  "python": {
+    "version": "3.12.13",
+    "relativePath": ".local/share/uv/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12",
+    "executableSha256": "7b05d803bbc1bbfc81644af4faf2b88f0a37b8de96b9f42c1e08033e2cd0848a",
+    "immutableTreeSha256": "bbee293001011ff5f6c8fd3abebf920e22a15da2bccaf5db6d89d84c001ec6c7"
+  },
+  "lock": {
+    "path": "requirements/voice-generation.lock",
+    "sha256": "2d8fc14de6f8c33fe817a59eb914cdef0fc7238626b51469fd4508084e59ccf8"
+  }
+}

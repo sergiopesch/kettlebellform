@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "packId": "maritime-command-v2",
+  "generatedOn": "2026-08-01",
+  "releaseStatus": "candidate",
+  "disclosure": "Original AI-generated British Maritime Command character voices; not recordings of a human coach and not affiliated with a military unit.",
+  "provenance": {
+    "voiceDesignModel": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+    "voiceDesignRevision": "7d3824abff87e49756bb0f83fb5411de75d160c4",
+    "upstreamVoiceDesignModel": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "upstreamVoiceDesignRevision": "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+    "cloneModel": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "cloneModelRevision": "a6eb4f68e4b056f1215157bb696209bc82a6db48",
+    "upstreamCloneModel": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    "upstreamCloneRevision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+    "license": "Apache-2.0",
+    "syntheticIdentity": true,
+    "namedPersonImitation": false
+  },
+  "mastering": {
+    "codec": "mp3",
+    "mimeType": "audio/mpeg",
+    "sampleRate": 24000,
+    "channels": 1,
+    "bitrateKbps": 64,
+    "targetIntegratedLufs": -16,
+    "maximumTruePeakDbtp": -1
+  },
+  "profiles": {
+    "male-command": {
+      "finding": {
+        "speech": "Step into the camera view.",
+        "file": "male-command/finding.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "b559e1ea65fd57e0077b0037ae881f3144ebd7c14a4a1c73969075a5dbb125ed",
+        "bytes": 10797,
+        "durationMs": 1258,
+        "integratedLufs": -16.6,
+        "truePeakDbtp": -4.1
+      },
+      "adjust-frame": {
+        "speech": "Bring your full body into view.",
+        "file": "male-command/adjust-frame.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "1f18b602904034e1021f8c0b917c428f196f5947e72379bdc16d10c9b558a38b",
+        "bytes": 15021,
+        "durationMs": 1790,
+        "integratedLufs": -16.4,
+        "truePeakDbtp": -2.7
+      },
+      "move-left": {
+        "speech": "Move a little left in the frame.",
+        "file": "male-command/move-left.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "066f0d641fef30d5f442b23f328882a19c65f6413dde9faae4a6fcf837902c4a",
+        "bytes": 12909,
+        "durationMs": 1514,
+        "integratedLufs": -16.5,
+        "truePeakDbtp": -3.2
+      },
+      "move-right": {
+        "speech": "Move a little right in the frame.",
+        "file": "male-command/move-right.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "9231eaea7da2d3b9f991965260281e07516e9bd88788e10df2d3e3da4b9edc8a",
+        "bytes": 13869,
+        "durationMs": 1636,
+        "integratedLufs": -16.5,
+        "truePeakDbtp": -4.6
+      },
+      "step-back": {
+        "speech": "Step away from the camera. Keep your head, hands, and feet in view.",
+        "file": "male-command/step-back.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "b7edbc51d33e0f3f34e8467b7b434d8c09627ffd6d8f6f22c9f5f23797569ab5",
+        "bytes": 29613,
+        "durationMs": 3618,
+        "integratedLufs": -16.3,
+        "truePeakDbtp": -1.8
+      },
+      "move-closer": {
+        "speech": "Move a little closer.",
+        "file": "male-command/move-closer.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "d194fdc5577b377a94266a68818cd78af07cf07ff1c94b539165710df64e2b0c",
+        "bytes": 10029,
+        "durationMs": 1158,
+        "integratedLufs": -16.7,
+        "truePeakDbtp": -1.9
+      },
+      "turn-side-on": {
+        "speech": "Turn side-on to the camera.",
+        "file": "male-command/turn-side-on.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "2e61c3170c8f0a93274704437a523e8fd80aac343dce4d59a56647eb3bab6e63",
+        "bytes": 12717,
+        "durationMs": 1510,
+        "integratedLufs": -16.6,
+        "truePeakDbtp": -3.1
+      },
+      "ready": {
+        "speech": "Great. You are in a good position.",
+        "file": "male-command/ready.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "e17f8078c09ba9b30427000d58ebc107cd9a27cc222f5bfa1241e423c00958ff",
+        "bytes": 17709,
+        "durationMs": 2119,
+        "integratedLufs": -16.2,
+        "truePeakDbtp": -2.4
+      },
+      "coach-on": {
+        "speech": "Voice framing coach on.",
+        "file": "male-command/coach-on.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "8f14860dae0dc0bddcd301806010039fb94db008c36c08b8287580d900ba8b80",
+        "bytes": 11757,
+        "durationMs": 1382,
+        "integratedLufs": -16.4,
+        "truePeakDbtp": -2.9
+      },
+      "male-command-selected": {
+        "speech": "Male British coach selected.",
+        "file": "male-command/male-command-selected.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "f35f13bd2964005ed52282f41b8c36181dca213b274781300d61464e16a57182",
+        "bytes": 13677,
+        "durationMs": 1613,
+        "integratedLufs": -16.5,
+        "truePeakDbtp": -3
+      },
+      "female-command-selected": {
+        "speech": "Female British coach selected.",
+        "file": "male-command/female-command-selected.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "946b1c99da02f1cf5519b77bda0eff66a9b95be6300e35654f0c53639cc75a00",
+        "bytes": 14253,
+        "durationMs": 1702,
+        "integratedLufs": -16.6,
+        "truePeakDbtp": -3.9
+      }
+    },
+    "female-command": {
+      "finding": {
+        "speech": "Step into the camera view.",
+        "file": "female-command/finding.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "588cf4e45bc4eaa5d588767ebb96d010e7697c4f89dd0d39336d2762c7de622a",
+        "bytes": 12333,
+        "durationMs": 1449,
+        "integratedLufs": -16.3,
+        "truePeakDbtp": -2.4
+      },
+      "adjust-frame": {
+        "speech": "Bring your full body into view.",
+        "file": "female-command/adjust-frame.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "4e0103402e5e1064f440b88b635e5b749f0a5c377f7c29f232b969bbbf3ae8ad",
+        "bytes": 13485,
+        "durationMs": 1586,
+        "integratedLufs": -16.3,
+        "truePeakDbtp": -2.3
+      },
+      "move-left": {
+        "speech": "Move a little left in the frame.",
+        "file": "female-command/move-left.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "c1383e053f21a937924252ee64ead37ae9a7d45b88c565525b99e6dc2ec10404",
+        "bytes": 13101,
+        "durationMs": 1555,
+        "integratedLufs": -16.7,
+        "truePeakDbtp": -1.9
+      },
+      "move-right": {
+        "speech": "Move a little right in the frame.",
+        "file": "female-command/move-right.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "e949879b9b12d33125a8dc223c3a5fbab4bdb283fff1d73eb267edb1d1b27bd2",
+        "bytes": 12717,
+        "durationMs": 1503,
+        "integratedLufs": -16.3,
+        "truePeakDbtp": -2.4
+      },
+      "step-back": {
+        "speech": "Step away from the camera. Keep your head, hands, and feet in view.",
+        "file": "female-command/step-back.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "4aec75ab04c182a5a13ba6b8750d2502860a480c63240511607337a3be2f360b",
+        "bytes": 31533,
+        "durationMs": 3864,
+        "integratedLufs": -16.4,
+        "truePeakDbtp": -1.8
+      },
+      "move-closer": {
+        "speech": "Move a little closer.",
+        "file": "female-command/move-closer.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "675093416f00d98c5462077a7c34fd6162255824c690233acc6946732f5c155e",
+        "bytes": 9453,
+        "durationMs": 1087,
+        "integratedLufs": -16.4,
+        "truePeakDbtp": -2.9
+      },
+      "turn-side-on": {
+        "speech": "Turn side-on to the camera.",
+        "file": "female-command/turn-side-on.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "c74081c8602d3392b972eabf32ca6cc0e1f69c1beef706fefe7c7a162aefdfe6",
+        "bytes": 12333,
+        "durationMs": 1461,
+        "integratedLufs": -16.7,
+        "truePeakDbtp": -2.9
+      },
+      "ready": {
+        "speech": "Great. You are in a good position.",
+        "file": "female-command/ready.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "c826d0b6d78fc0fa1de2135499b2dc4ae3136bf92a7fb98eaa615295d7190a78",
+        "bytes": 17517,
+        "durationMs": 2109,
+        "integratedLufs": -16.5,
+        "truePeakDbtp": -2.4
+      },
+      "coach-on": {
+        "speech": "Voice framing coach on.",
+        "file": "female-command/coach-on.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "82ba33042630918dcab60ecfadb0d1eff78617be178766e6390d95628cbf3bef",
+        "bytes": 10989,
+        "durationMs": 1284,
+        "integratedLufs": -16.5,
+        "truePeakDbtp": -2
+      },
+      "male-command-selected": {
+        "speech": "Male British coach selected.",
+        "file": "female-command/male-command-selected.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "e4c74962e586d34522e7386556c0a6ab9fba6a5c67f0bb1e284ab25187c9ea67",
+        "bytes": 13677,
+        "durationMs": 1615,
+        "integratedLufs": -17,
+        "truePeakDbtp": -2.1
+      },
+      "female-command-selected": {
+        "speech": "Female British coach selected.",
+        "file": "female-command/female-command-selected.mp3",
+        "mimeType": "audio/mpeg",
+        "sha256": "bb55a1d63a091ee29cd190cf9051a01484d38869689cd5c4388e0df76a3f37a7",
+        "bytes": 13677,
+        "durationMs": 1620,
+        "integratedLufs": -16.6,
+        "truePeakDbtp": -2.2
+      }
+    }
+  }
+}

@@ -85,7 +85,7 @@ export function drawPoseOverlay(
 
   drawAnatomyBackdrop(context, width, height, layers);
   if (layers.body) {
-    drawBodyLayer(context, analysis, points, width, height);
+    drawBodyLayer(context, points, width, height);
   }
   if (layers.muscles) {
     drawMuscleLayer(context, points, width, height);
@@ -95,7 +95,7 @@ export function drawPoseOverlay(
   }
   if (layers.gaussian) {
     drawGaussianRisks(context, analysis, width, height);
-    drawWristTrail(context, analysis, points, width);
+    drawWristTrail(context, points, width);
   }
   context.restore();
 
@@ -128,7 +128,6 @@ function drawAnatomyBackdrop(
 
 function drawBodyLayer(
   context: CanvasRenderingContext2D,
-  analysis: AnalysisFrame,
   points: ScreenPoint[],
   width: number,
   height: number
@@ -440,7 +439,6 @@ function drawGaussianRisks(context: CanvasRenderingContext2D, analysis: Analysis
 
 function drawWristTrail(
   context: CanvasRenderingContext2D,
-  analysis: AnalysisFrame,
   points: ScreenPoint[],
   width: number
 ): void {
@@ -455,8 +453,8 @@ function drawWristTrail(
   const wristY = (leftWrist.y + rightWrist.y) / 2;
   const radius = Math.max(20, width * 0.032);
   const gradient = context.createRadialGradient(wristX, wristY, 0, wristX, wristY, radius);
-  gradient.addColorStop(0, "rgba(132, 220, 198, 0.72)");
-  gradient.addColorStop(1, "rgba(132, 220, 198, 0)");
+  gradient.addColorStop(0, "rgba(212, 20, 42, 0.76)");
+  gradient.addColorStop(1, "rgba(212, 20, 42, 0)");
   context.fillStyle = gradient;
   context.beginPath();
   context.arc(wristX, wristY, radius, 0, Math.PI * 2);

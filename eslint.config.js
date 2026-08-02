@@ -27,9 +27,7 @@ export default tseslint.config(
   },
   {
     files: [
-      "api/**/*.ts",
       "e2e/**/*.ts",
-      "server/**/*.ts",
       "playwright.config.ts",
       "vite.config.ts"
     ],

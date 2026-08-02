@@ -8,21 +8,19 @@ import {
 } from "../lib/coachVoiceProfiles";
 import { FRAMING_CUES, type FramingCue } from "../lib/framingCoach";
 import {
-  createRealtimeVoiceClient,
-  type RealtimeVoiceClient
-} from "../lib/realtimeVoiceClient";
+  createCoachVoicePackClient,
+  supportsCoachVoicePack,
+  type CoachVoicePackClient
+} from "../lib/coachVoicePackClient";
 
 export type VoiceCoachAvailability = "loading" | "ready" | "unavailable";
-export type VoiceCoachTransport =
-  | "off"
-  | "connecting"
-  | "realtime"
-  | "device"
-  | "visual";
+export type VoiceCoachTransport = "off" | "loading" | "pack" | "device" | "visual";
 
 type SpokenFramingOptions = {
   cue: FramingCue;
   automatic: boolean;
+  guidanceEvidenceEpoch?: number;
+  guidanceEvidenceValid?: boolean;
   motionActive?: boolean;
   sessionActive?: boolean;
 };
@@ -51,6 +49,8 @@ function chooseLocalVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice 
 export function useSpokenFramingCoach({
   cue,
   automatic,
+  guidanceEvidenceEpoch = 0,
+  guidanceEvidenceValid = true,
   motionActive = false,
   sessionActive = false
 }: SpokenFramingOptions) {
@@ -58,33 +58,35 @@ export function useSpokenFramingCoach({
     typeof window !== "undefined" &&
     "speechSynthesis" in window &&
     "SpeechSynthesisUtterance" in window;
-  const realtimeSupported =
-    typeof window !== "undefined" &&
-    typeof window.RTCPeerConnection === "function" &&
-    typeof window.fetch === "function";
+  const packSupported = supportsCoachVoicePack();
   const [availability, setAvailability] = useState<VoiceCoachAvailability>(
-    realtimeSupported ? "ready" : speechSupported ? "loading" : "unavailable"
+    packSupported ? "ready" : speechSupported ? "loading" : "unavailable"
   );
   const [enabled, setEnabled] = useState(false);
   const [transport, setTransport] = useState<VoiceCoachTransport>("off");
   const [selectedProfile, setSelectedProfile] = useState<VoiceProfileId>(
     DEFAULT_COACH_VOICE_PROFILE_ID
   );
-  const [stableCue, setStableCue] = useState<FramingCue>(FRAMING_CUES.finding);
+  const [stableGuidance, setStableGuidance] = useState(() => ({
+    cue: FRAMING_CUES.finding,
+    evidenceEpoch: guidanceEvidenceEpoch
+  }));
   const [speechStatus, setSpeechStatus] = useState("");
   const [pageVisible, setPageVisible] = useState(
     typeof document === "undefined" || document.visibilityState !== "hidden"
   );
   const [motionCooldownActive, setMotionCooldownActive] = useState(false);
+  const effectiveStableCue =
+    guidanceEvidenceValid && stableGuidance.evidenceEpoch === guidanceEvidenceEpoch
+      ? stableGuidance.cue
+      : FRAMING_CUES.finding;
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const realtimeClientRef = useRef<RealtimeVoiceClient | null>(null);
-  const closingRealtimeRef = useRef<Promise<void>>(Promise.resolve());
-  const connectionEpochRef = useRef(0);
+  const packClientRef = useRef<CoachVoicePackClient | null>(null);
+  const activationEpochRef = useRef(0);
   const enabledRef = useRef(false);
   const selectedProfileRef = useRef<VoiceProfileId>(DEFAULT_COACH_VOICE_PROFILE_ID);
   const pageVisibleRef = useRef(pageVisible);
-  const realtimeSessionAllowedRef = useRef(true);
   const mountedRef = useRef(true);
   const lastSpokenAtRef = useRef(Number.NEGATIVE_INFINITY);
   const readyArmedRef = useRef(true);
@@ -104,32 +106,23 @@ export function useSpokenFramingCoach({
   }, [speechSupported]);
 
   const cancelOwnedSpeech = useCallback(() => {
-    realtimeClientRef.current?.cancel();
+    activationEpochRef.current += 1;
+    packClientRef.current?.cancel();
     cancelLocalSpeech();
   }, [cancelLocalSpeech]);
 
-  const closeRealtime = useCallback((): Promise<void> => {
-    connectionEpochRef.current += 1;
-    const client = realtimeClientRef.current;
-    realtimeClientRef.current = null;
-    if (client) {
-      try {
-        closingRealtimeRef.current = Promise.resolve(client.close()).catch(() => undefined);
-      } catch {
-        closingRealtimeRef.current = Promise.resolve();
-      }
-    }
-    return closingRealtimeRef.current;
-  }, []);
-
   const resetGuidanceState = useCallback(() => {
-    setStableCue(FRAMING_CUES.finding);
+    setStableGuidance((current) =>
+      current.cue.id === "finding" && current.evidenceEpoch === guidanceEvidenceEpoch
+        ? current
+        : { cue: FRAMING_CUES.finding, evidenceEpoch: guidanceEvidenceEpoch }
+    );
     readyArmedRef.current = true;
     if (rearmHandleRef.current !== null) {
       window.clearTimeout(rearmHandleRef.current);
       rearmHandleRef.current = null;
     }
-  }, []);
+  }, [guidanceEvidenceEpoch]);
 
   const speakLocally = useCallback(
     (message: CoachVoiceMessage, onError?: () => void) => {
@@ -178,15 +171,17 @@ export function useSpokenFramingCoach({
     [cancelLocalSpeech, speechSupported]
   );
 
-  const fallBackFromRealtime = useCallback((message?: string) => {
-    void closeRealtime();
+  const fallBackFromPack = useCallback((message?: string) => {
+    activationEpochRef.current += 1;
+    packClientRef.current?.cancel();
+    void packClientRef.current?.deactivate();
     if (!mountedRef.current || !enabledRef.current) {
       return;
     }
     if (voiceRef.current) {
       setTransport("device");
       setSpeechStatus(
-        "OpenAI Realtime is unavailable. Using a private on-device English voice; tone may vary."
+        "The branded AI voice could not load. Using a browser-reported local English voice; sound and platform privacy behaviour may vary."
       );
       return;
     }
@@ -194,78 +189,68 @@ export function useSpokenFramingCoach({
     setEnabled(false);
     setTransport("visual");
     setSpeechStatus(
-      message || "AI voice is unavailable. Visual framing cues remain active."
+      message || "The branded AI voice is unavailable. Visual framing cues remain active."
     );
-  }, [closeRealtime]);
+  }, []);
 
-  const connectRealtime = useCallback(
+  const activatePack = useCallback(
     async (profile: VoiceProfileId, confirmationId?: CoachVoiceMessageId) => {
-      const pendingClose = closeRealtime();
-      const epoch = connectionEpochRef.current;
-      if (
-        !mountedRef.current ||
-        !enabledRef.current ||
-        !pageVisibleRef.current ||
-        !realtimeSessionAllowedRef.current
-      ) {
+      cancelOwnedSpeech();
+      const epoch = activationEpochRef.current;
+      if (!mountedRef.current || !enabledRef.current || !pageVisibleRef.current) {
         return;
       }
-      setTransport("connecting");
-      setSpeechStatus("Connecting the AI voice coach securely…");
-
-      await pendingClose;
-      if (
-        !mountedRef.current ||
-        !enabledRef.current ||
-        !pageVisibleRef.current ||
-        !realtimeSessionAllowedRef.current ||
-        connectionEpochRef.current !== epoch
-      ) {
-        return;
-      }
-
-      const client: RealtimeVoiceClient = createRealtimeVoiceClient({
-        onError: (message) => {
-          if (
-            mountedRef.current &&
-            enabledRef.current &&
-            realtimeClientRef.current === client &&
-            connectionEpochRef.current === epoch
-          ) {
-            fallBackFromRealtime(message);
+      setTransport("loading");
+      setSpeechStatus("Loading the British Maritime Command voice…");
+      const client =
+        packClientRef.current ??
+        createCoachVoicePackClient({
+          onError: (message) => {
+            if (mountedRef.current && enabledRef.current) {
+              fallBackFromPack(message);
+            }
           }
-        }
-      });
-      realtimeClientRef.current = client;
+        });
+      packClientRef.current = client;
 
       try {
-        await client.connect(profile);
+        // This call synchronously creates/resumes Web Audio before its first
+        // await, preserving iOS user activation when invoked by the opt-in click.
+        const activation = client.activate(profile);
+        await activation;
         if (
           !mountedRef.current ||
           !enabledRef.current ||
-          realtimeClientRef.current !== client ||
-          connectionEpochRef.current !== epoch
+          !pageVisibleRef.current ||
+          packClientRef.current !== client ||
+          activationEpochRef.current !== epoch
         ) {
-          void client.close();
+          client.cancel();
           return;
         }
-        setTransport("realtime");
+        setTransport("pack");
         setSpeechStatus("");
         if (confirmationId && client.speak(coachVoiceMessage(confirmationId))) {
           lastSpokenAtRef.current = performance.now();
         }
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof DOMException &&
+          error.name === "AbortError"
+        ) {
+          return;
+        }
         if (
           mountedRef.current &&
           enabledRef.current &&
-          realtimeClientRef.current === client &&
-          connectionEpochRef.current === epoch
+          packClientRef.current === client &&
+          activationEpochRef.current === epoch
         ) {
-          fallBackFromRealtime();
+          fallBackFromPack();
         }
       }
     },
-    [closeRealtime, fallBackFromRealtime]
+    [cancelOwnedSpeech, fallBackFromPack]
   );
 
   const disableAfterDeviceError = useCallback(() => {
@@ -276,10 +261,12 @@ export function useSpokenFramingCoach({
 
   const speak = useCallback(
     (message: CoachVoiceMessage) => {
-      if (transport === "realtime") {
-        const spoken = realtimeClientRef.current?.speak(message) ?? false;
+      if (transport === "pack") {
+        const spoken = packClientRef.current?.speak(message) ?? false;
         if (spoken) {
           lastSpokenAtRef.current = performance.now();
+        } else {
+          fallBackFromPack();
         }
         return spoken;
       }
@@ -287,8 +274,7 @@ export function useSpokenFramingCoach({
         return speakLocally(message, disableAfterDeviceError);
       }
       return false;
-    },
-    [disableAfterDeviceError, speakLocally, transport]
+    }, [disableAfterDeviceError, fallBackFromPack, speakLocally, transport]
   );
 
   useEffect(() => {
@@ -309,7 +295,7 @@ export function useSpokenFramingCoach({
       const voice = chooseLocalVoice(voices);
       const hadVoice = voiceRef.current !== null;
       voiceRef.current = voice;
-      if (realtimeSupported || voice) {
+      if (packSupported || voice) {
         setAvailability("ready");
         return;
       }
@@ -331,7 +317,7 @@ export function useSpokenFramingCoach({
     syncVoices();
     synthesis.addEventListener?.("voiceschanged", syncVoices);
     const discoveryTimeout = window.setTimeout(() => {
-      if (!voiceRef.current && !realtimeSupported) {
+      if (!voiceRef.current && !packSupported) {
         discoveryTimedOutRef.current = true;
         enabledRef.current = false;
         setEnabled(false);
@@ -343,7 +329,7 @@ export function useSpokenFramingCoach({
       window.clearTimeout(discoveryTimeout);
       synthesis.removeEventListener?.("voiceschanged", syncVoices);
     };
-  }, [cancelLocalSpeech, realtimeSupported, speechSupported, transport]);
+  }, [cancelLocalSpeech, packSupported, speechSupported, transport]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -352,7 +338,7 @@ export function useSpokenFramingCoach({
       setPageVisible(visible);
       if (!visible) {
         cancelOwnedSpeech();
-        void closeRealtime();
+        void packClientRef.current?.deactivate();
         if (enabledRef.current) {
           setTransport("off");
         }
@@ -362,7 +348,7 @@ export function useSpokenFramingCoach({
       pageVisibleRef.current = false;
       setPageVisible(false);
       cancelOwnedSpeech();
-      void closeRealtime();
+      void packClientRef.current?.deactivate();
       if (enabledRef.current) {
         setTransport("off");
       }
@@ -380,7 +366,7 @@ export function useSpokenFramingCoach({
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, [cancelOwnedSpeech, closeRealtime]);
+  }, [cancelOwnedSpeech]);
 
   useEffect(() => {
     const wasActive = previousSessionActiveRef.current;
@@ -389,28 +375,23 @@ export function useSpokenFramingCoach({
     }
     previousSessionActiveRef.current = sessionActive;
     cancelOwnedSpeech();
-    if (wasActive && !sessionActive) {
-      realtimeSessionAllowedRef.current = false;
-      void closeRealtime();
-      if (enabledRef.current) {
-        setTransport("off");
-      }
-    } else if (sessionActive) {
-      realtimeSessionAllowedRef.current = true;
+    if (wasActive && !sessionActive && enabledRef.current) {
+      setTransport("off");
+      void packClientRef.current?.deactivate();
     }
     resetGuidanceState();
-  }, [cancelOwnedSpeech, closeRealtime, resetGuidanceState, sessionActive]);
+  }, [cancelOwnedSpeech, resetGuidanceState, sessionActive]);
 
   useEffect(() => {
     if (!enabled || !pageVisible || !sessionActive || transport !== "off") {
       return;
     }
-    if (realtimeSupported) {
-      void connectRealtime(selectedProfileRef.current);
+    if (packSupported) {
+      void activatePack(selectedProfileRef.current);
     } else if (voiceRef.current) {
       setTransport("device");
     }
-  }, [connectRealtime, enabled, pageVisible, realtimeSupported, sessionActive, transport]);
+  }, [activatePack, enabled, packSupported, pageVisible, sessionActive, transport]);
 
   useEffect(() => {
     let delay: number | null = null;
@@ -433,22 +414,41 @@ export function useSpokenFramingCoach({
   }, [automatic, motionActive, motionCooldownActive, sessionActive]);
 
   useEffect(() => {
-    if (cue.id === stableCue.id) {
+    if (guidanceEvidenceValid) {
       return;
     }
-    const delay = cue.id === "ready" || cue.id === "finding"
-      ? READY_STABLE_MS
-      : CORRECTION_STABLE_MS;
-    const handle = window.setTimeout(() => setStableCue(cue), delay);
+    cancelOwnedSpeech();
+    const handle = window.setTimeout(resetGuidanceState, 0);
     return () => window.clearTimeout(handle);
-  }, [cue, stableCue.id]);
+  }, [cancelOwnedSpeech, guidanceEvidenceValid, resetGuidanceState]);
+
+  useEffect(() => {
+    if (!guidanceEvidenceValid) {
+      return;
+    }
+    if (
+      cue.id === stableGuidance.cue.id &&
+      stableGuidance.evidenceEpoch === guidanceEvidenceEpoch
+    ) {
+      return;
+    }
+    const delay =
+      cue.id === "ready" || cue.id === "finding"
+        ? READY_STABLE_MS
+        : CORRECTION_STABLE_MS;
+    const handle = window.setTimeout(
+      () => setStableGuidance({ cue, evidenceEpoch: guidanceEvidenceEpoch }),
+      delay
+    );
+    return () => window.clearTimeout(handle);
+  }, [cue, guidanceEvidenceEpoch, guidanceEvidenceValid, stableGuidance]);
 
   useEffect(() => {
     if (rearmHandleRef.current !== null) {
       window.clearTimeout(rearmHandleRef.current);
       rearmHandleRef.current = null;
     }
-    if (stableCue.id !== "ready") {
+    if (effectiveStableCue.id !== "ready") {
       rearmHandleRef.current = window.setTimeout(() => {
         readyArmedRef.current = true;
       }, READY_REARM_MS);
@@ -459,13 +459,21 @@ export function useSpokenFramingCoach({
         rearmHandleRef.current = null;
       }
     };
-  }, [stableCue.id]);
+  }, [effectiveStableCue.id]);
 
   useEffect(() => {
-    const automaticActive = automatic && !motionActive && !motionCooldownActive;
-    const transportReady = transport === "realtime" || transport === "device";
-    if (!enabled || !transportReady || !pageVisible) {
+    const automaticActive =
+      automatic &&
+      guidanceEvidenceValid &&
+      effectiveStableCue.id === cue.id &&
+      !motionActive &&
+      !motionCooldownActive;
+    const transportReady = transport === "pack" || transport === "device";
+    if (!enabled || !pageVisible) {
       cancelOwnedSpeech();
+      return;
+    }
+    if (!transportReady) {
       return;
     }
     if (!automaticActive) {
@@ -477,7 +485,8 @@ export function useSpokenFramingCoach({
 
     let active = true;
     let handle = 0;
-    const correction = stableCue.id !== "ready" && stableCue.id !== "finding";
+    const correction =
+      effectiveStableCue.id !== "ready" && effectiveStableCue.id !== "finding";
 
     const announce = () => {
       if (!active) {
@@ -488,13 +497,13 @@ export function useSpokenFramingCoach({
         handle = window.setTimeout(announce, MIN_ANNOUNCEMENT_GAP_MS - elapsed);
         return;
       }
-      if (stableCue.id === "ready") {
+      if (effectiveStableCue.id === "ready") {
         if (readyArmedRef.current && speak(coachVoiceMessage("ready"))) {
           readyArmedRef.current = false;
         }
         return;
       }
-      if (speak(coachVoiceMessage(stableCue.id)) && correction) {
+      if (speak(coachVoiceMessage(effectiveStableCue.id)) && correction) {
         handle = window.setTimeout(announce, CORRECTION_REPEAT_MS);
       }
     };
@@ -508,13 +517,15 @@ export function useSpokenFramingCoach({
   }, [
     automatic,
     cancelOwnedSpeech,
+    cue.id,
     enabled,
+    guidanceEvidenceValid,
     motionActive,
     motionCooldownActive,
     pageVisible,
     sessionActive,
     speak,
-    stableCue,
+    effectiveStableCue,
     transport
   ]);
 
@@ -524,9 +535,11 @@ export function useSpokenFramingCoach({
       mountedRef.current = false;
       enabledRef.current = false;
       cancelOwnedSpeech();
-      void closeRealtime();
+      const client = packClientRef.current;
+      packClientRef.current = null;
+      void client?.close();
     };
-  }, [cancelOwnedSpeech, closeRealtime]);
+  }, [cancelOwnedSpeech]);
 
   const enable = useCallback(() => {
     if (availability !== "ready") {
@@ -536,8 +549,8 @@ export function useSpokenFramingCoach({
     resetGuidanceState();
     enabledRef.current = true;
     setEnabled(true);
-    if (realtimeSupported) {
-      void connectRealtime(selectedProfileRef.current, "coach-on");
+    if (packSupported) {
+      void activatePack(selectedProfileRef.current, "coach-on");
       return;
     }
     if (voiceRef.current) {
@@ -549,10 +562,10 @@ export function useSpokenFramingCoach({
     setEnabled(false);
     setTransport("visual");
   }, [
+    activatePack,
     availability,
-    connectRealtime,
     disableAfterDeviceError,
-    realtimeSupported,
+    packSupported,
     resetGuidanceState,
     speakLocally
   ]);
@@ -563,9 +576,9 @@ export function useSpokenFramingCoach({
     setTransport("off");
     setSpeechStatus("");
     cancelOwnedSpeech();
-    void closeRealtime();
+    void packClientRef.current?.deactivate();
     resetGuidanceState();
-  }, [cancelOwnedSpeech, closeRealtime, resetGuidanceState]);
+  }, [cancelOwnedSpeech, resetGuidanceState]);
 
   const toggle = useCallback(() => {
     if (enabledRef.current) {
@@ -575,39 +588,49 @@ export function useSpokenFramingCoach({
     }
   }, [disable, enable]);
 
-  const selectProfile = useCallback((profile: VoiceProfileId) => {
-    if (selectedProfileRef.current === profile) {
-      return;
-    }
-    selectedProfileRef.current = profile;
-    setSelectedProfile(profile);
-    cancelOwnedSpeech();
-    resetGuidanceState();
-    if (!enabledRef.current) {
-      return;
-    }
-    const confirmationId = profile === "male-command"
-      ? "male-command-selected"
-      : "female-command-selected";
-    if (realtimeSupported) {
-      void connectRealtime(profile, confirmationId);
-    } else if (voiceRef.current) {
-      setTransport("device");
-      speakLocally(coachVoiceMessage(confirmationId), disableAfterDeviceError);
-    }
-  }, [
-    cancelOwnedSpeech,
-    connectRealtime,
-    disableAfterDeviceError,
-    realtimeSupported,
-    resetGuidanceState,
-    speakLocally
-  ]);
+  const selectProfile = useCallback(
+    (profile: VoiceProfileId) => {
+      if (selectedProfileRef.current === profile) {
+        return;
+      }
+      if (enabledRef.current && transport === "device") {
+        return;
+      }
+      selectedProfileRef.current = profile;
+      setSelectedProfile(profile);
+      cancelOwnedSpeech();
+      resetGuidanceState();
+      if (!enabledRef.current) {
+        return;
+      }
+      const confirmationId =
+        profile === "male-command"
+          ? "male-command-selected"
+          : "female-command-selected";
+      if (packSupported) {
+        void activatePack(profile, confirmationId);
+      } else if (voiceRef.current) {
+        setTransport("device");
+        speakLocally(coachVoiceMessage(confirmationId), disableAfterDeviceError);
+      }
+    },
+    [
+      activatePack,
+      cancelOwnedSpeech,
+      disableAfterDeviceError,
+      packSupported,
+      resetGuidanceState,
+      speakLocally,
+      transport
+    ]
+  );
 
   const canRepeat =
     enabled &&
-    (transport === "realtime" || transport === "device") &&
+    (transport === "pack" || transport === "device") &&
     automatic &&
+    guidanceEvidenceValid &&
+    effectiveStableCue.id === cue.id &&
     !motionActive &&
     !motionCooldownActive &&
     pageVisible;
@@ -617,8 +640,8 @@ export function useSpokenFramingCoach({
       return;
     }
     setSpeechStatus("");
-    speak(coachVoiceMessage(stableCue.id));
-  }, [canRepeat, speak, stableCue.id]);
+    speak(coachVoiceMessage(effectiveStableCue.id));
+  }, [canRepeat, effectiveStableCue.id, speak]);
 
   return {
     availability,
@@ -626,7 +649,7 @@ export function useSpokenFramingCoach({
     canRepeat,
     selectedProfile,
     transport,
-    stableCue,
+    stableCue: effectiveStableCue,
     speechStatus,
     selectProfile,
     toggle,

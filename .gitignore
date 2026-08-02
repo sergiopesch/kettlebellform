@@ -11,4 +11,6 @@ test-results
 /public/models/
 /public/vendor/
 .env*
-!.env.example
+.voice-private/
+__pycache__/
+*.py[cod]

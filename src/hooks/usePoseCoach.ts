@@ -41,6 +41,7 @@ export type CameraOptics = {
 };
 
 export type ClipAnalysisStage = "preparing" | "finding" | "checking" | "building";
+export type LivePoseState = "searching" | "reacquiring" | "tracked" | "ambiguous";
 
 export type ClipAnalysisProgress = {
   stage: ClipAnalysisStage;
@@ -89,13 +90,254 @@ type InFlightFrame = Pick<PoseWorkerFrameRequest, "channel" | "jobId" | "frameId
 
 const MIN_CALIBRATION_SAMPLES = 48;
 const MIN_CALIBRATION_MS = 2_000;
-const LOST_POSE_TIMEOUT_MS = 750;
 const CLIP_SAMPLE_INTERVAL_MS = 1_000 / 15;
 const CLIP_TOTAL_TIMEOUT_MS = 30_000;
 const CLIP_DECODE_TIMEOUT_MS = 6_000;
 const CLIP_EXTRACTION_TIMEOUT_MS = 10_000;
 const CLIP_INFERENCE_TIMEOUT_MS = 15_000;
 const CLIP_END_TOLERANCE_SECONDS = 0.35;
+const LIVE_SUBJECT_REACQUISITION_FRAMES = 3;
+const LIVE_SUBJECT_MAX_GAP_MS = 500;
+const LIVE_SUBJECT_MIN_CORE_VISIBILITY = 0.45;
+
+type SubjectSignature = {
+  centerX: number;
+  centerY: number;
+  torsoScale: number;
+  shoulderRatio: number;
+  hipRatio: number;
+  torsoDirectionX: number;
+  torsoDirectionY: number;
+  worldTorsoScale: number | null;
+};
+
+type LiveSubjectGate = {
+  confirmed: SubjectSignature | null;
+  reacquisitionAnchor: SubjectSignature | null;
+  reacquisitionAnchorTimestamp: number | null;
+  candidate: SubjectSignature | null;
+  candidateFrames: number;
+  lastTimestamp: number | null;
+};
+
+type LiveSubjectDecision = "accepted" | "reacquiring" | "discontinuity" | "invalid";
+
+function createLiveSubjectGate(): LiveSubjectGate {
+  return {
+    confirmed: null,
+    reacquisitionAnchor: null,
+    reacquisitionAnchorTimestamp: null,
+    candidate: null,
+    candidateFrames: 0,
+    lastTimestamp: null
+  };
+}
+
+function resetLiveSubjectGate(gate: LiveSubjectGate): void {
+  gate.confirmed = null;
+  gate.reacquisitionAnchor = null;
+  gate.reacquisitionAnchorTimestamp = null;
+  gate.candidate = null;
+  gate.candidateFrames = 0;
+  gate.lastTimestamp = null;
+}
+
+function retainLiveSubjectForReacquisition(gate: LiveSubjectGate): void {
+  if (gate.confirmed && gate.lastTimestamp !== null) {
+    gate.reacquisitionAnchor = gate.confirmed;
+    gate.reacquisitionAnchorTimestamp = gate.lastTimestamp;
+  }
+  gate.confirmed = null;
+  gate.candidate = null;
+  gate.candidateFrames = 0;
+  gate.lastTimestamp = null;
+  if (!gate.reacquisitionAnchor || gate.reacquisitionAnchorTimestamp === null) {
+    resetLiveSubjectGate(gate);
+  }
+}
+
+function pointIsUsable(point: Landmark | NormalizedLandmark | undefined): point is Landmark {
+  return Boolean(
+    point &&
+      Number.isFinite(point.x) &&
+      Number.isFinite(point.y) &&
+      Number.isFinite(point.z)
+  );
+}
+
+function pointDistance(
+  first: Pick<Landmark, "x" | "y">,
+  second: Pick<Landmark, "x" | "y">
+): number {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function midpoint(
+  first: Pick<Landmark, "x" | "y">,
+  second: Pick<Landmark, "x" | "y">
+) {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+function createSubjectSignature(
+  landmarks: NormalizedLandmark[],
+  worldLandmarks: Landmark[]
+): SubjectSignature | null {
+  const leftShoulder = landmarks[11];
+  const rightShoulder = landmarks[12];
+  const leftHip = landmarks[23];
+  const rightHip = landmarks[24];
+  const core = [leftShoulder, rightShoulder, leftHip, rightHip];
+  if (
+    !core.every(
+      (point) =>
+        pointIsUsable(point) &&
+        (point.visibility ?? 0) >= LIVE_SUBJECT_MIN_CORE_VISIBILITY
+    )
+  ) {
+    return null;
+  }
+
+  const shoulderMidpoint = midpoint(leftShoulder, rightShoulder);
+  const hipMidpoint = midpoint(leftHip, rightHip);
+  const torsoScale = pointDistance(shoulderMidpoint, hipMidpoint);
+  if (!Number.isFinite(torsoScale) || torsoScale < 0.06) {
+    return null;
+  }
+
+  const worldLeftShoulder = worldLandmarks[11];
+  const worldRightShoulder = worldLandmarks[12];
+  const worldLeftHip = worldLandmarks[23];
+  const worldRightHip = worldLandmarks[24];
+  let worldTorsoScale: number | null = null;
+  if (
+    [worldLeftShoulder, worldRightShoulder, worldLeftHip, worldRightHip].every(
+      pointIsUsable
+    )
+  ) {
+    const worldShoulderMidpoint = midpoint(worldLeftShoulder, worldRightShoulder);
+    const worldHipMidpoint = midpoint(worldLeftHip, worldRightHip);
+    const measuredWorldScale = pointDistance(worldShoulderMidpoint, worldHipMidpoint);
+    if (measuredWorldScale >= 0.05) {
+      worldTorsoScale = measuredWorldScale;
+    }
+  }
+
+  return {
+    centerX: (shoulderMidpoint.x + hipMidpoint.x) / 2,
+    centerY: (shoulderMidpoint.y + hipMidpoint.y) / 2,
+    torsoScale,
+    shoulderRatio: pointDistance(leftShoulder, rightShoulder) / torsoScale,
+    hipRatio: pointDistance(leftHip, rightHip) / torsoScale,
+    torsoDirectionX: (shoulderMidpoint.x - hipMidpoint.x) / torsoScale,
+    torsoDirectionY: (shoulderMidpoint.y - hipMidpoint.y) / torsoScale,
+    worldTorsoScale
+  };
+}
+
+function signaturesAreContinuous(
+  previous: SubjectSignature,
+  current: SubjectSignature,
+  elapsedMs: number
+): boolean {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0 || elapsedMs > LIVE_SUBJECT_MAX_GAP_MS) {
+    return false;
+  }
+  const referenceScale = Math.max(previous.torsoScale, current.torsoScale);
+  const centerShift = Math.hypot(
+    current.centerX - previous.centerX,
+    current.centerY - previous.centerY
+  ) / referenceScale;
+  const allowedCenterShift = Math.min(0.82, 0.38 + elapsedMs * 0.0012);
+  const scaleRatio = current.torsoScale / previous.torsoScale;
+  const shapeDelta = Math.max(
+    Math.abs(current.shoulderRatio - previous.shoulderRatio),
+    Math.abs(current.hipRatio - previous.hipRatio)
+  );
+  const torsoDirectionSimilarity =
+    current.torsoDirectionX * previous.torsoDirectionX +
+    current.torsoDirectionY * previous.torsoDirectionY;
+  const worldScaleRatio =
+    previous.worldTorsoScale && current.worldTorsoScale
+      ? current.worldTorsoScale / previous.worldTorsoScale
+      : 1;
+
+  return (
+    centerShift <= allowedCenterShift &&
+    scaleRatio >= 0.62 &&
+    scaleRatio <= 1.62 &&
+    shapeDelta <= 0.55 &&
+    torsoDirectionSimilarity >= 0.45 &&
+    worldScaleRatio >= 0.65 &&
+    worldScaleRatio <= 1.55
+  );
+}
+
+function evaluateLiveSubject(
+  gate: LiveSubjectGate,
+  landmarks: NormalizedLandmark[],
+  worldLandmarks: Landmark[],
+  timestamp: number
+): LiveSubjectDecision {
+  const signature = createSubjectSignature(landmarks, worldLandmarks);
+  if (!signature || !Number.isFinite(timestamp)) {
+    retainLiveSubjectForReacquisition(gate);
+    return "invalid";
+  }
+
+  if (gate.confirmed && gate.lastTimestamp !== null) {
+    if (signaturesAreContinuous(gate.confirmed, signature, timestamp - gate.lastTimestamp)) {
+      gate.confirmed = signature;
+      gate.lastTimestamp = timestamp;
+      return "accepted";
+    }
+    gate.confirmed = null;
+    gate.candidate = signature;
+    gate.candidateFrames = 1;
+    gate.lastTimestamp = timestamp;
+    return "discontinuity";
+  }
+
+  if (gate.reacquisitionAnchor && gate.reacquisitionAnchorTimestamp !== null) {
+    if (
+      !signaturesAreContinuous(
+        gate.reacquisitionAnchor,
+        signature,
+        timestamp - gate.reacquisitionAnchorTimestamp
+      )
+    ) {
+      gate.reacquisitionAnchor = null;
+      gate.reacquisitionAnchorTimestamp = null;
+      gate.candidate = signature;
+      gate.candidateFrames = 1;
+      gate.lastTimestamp = timestamp;
+      return "discontinuity";
+    }
+  }
+
+  if (
+    gate.candidate &&
+    gate.lastTimestamp !== null &&
+    signaturesAreContinuous(gate.candidate, signature, timestamp - gate.lastTimestamp)
+  ) {
+    gate.candidate = signature;
+    gate.candidateFrames += 1;
+  } else {
+    gate.candidate = signature;
+    gate.candidateFrames = 1;
+  }
+  gate.lastTimestamp = timestamp;
+
+  if (gate.candidateFrames < LIVE_SUBJECT_REACQUISITION_FRAMES) {
+    return "reacquiring";
+  }
+  gate.confirmed = signature;
+  gate.reacquisitionAnchor = null;
+  gate.reacquisitionAnchorTimestamp = null;
+  gate.candidate = null;
+  gate.candidateFrames = 0;
+  return "accepted";
+}
 
 type ZoomCapabilities = MediaTrackCapabilities & {
   zoom?: { min: number; max: number; step?: number };
@@ -236,16 +478,18 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
   const liveJobIdRef = useRef(0);
   const liveFrameIdRef = useRef(0);
   const liveSourceTimestampRef = useRef(Number.NEGATIVE_INFINITY);
+  const liveSubjectGateRef = useRef(createLiveSubjectGate());
+  const livePoseStateRef = useRef<LivePoseState>("searching");
   const clipJobIdRef = useRef(0);
   const clipFrameWaiterRef = useRef<ClipFrameWaiter | null>(null);
   const activeClipRunRef = useRef<ActiveClipRun | null>(null);
+  const bitmapExtractionLeaseRef = useRef<Promise<ImageBitmap> | null>(null);
   const analyzerRef = useRef(new SwingAnalyzer());
   const settingsRef = useRef(settings);
   const anatomyLayersRef = useRef(anatomyLayers);
   const calibrationRef = useRef<CalibrationProfile | null>(null);
   const calibrationSamplesRef = useRef<PoseFrame[]>([]);
   const calibrationStartedAtRef = useRef(0);
-  const lastPoseAtRef = useRef(0);
   const lastUiUpdateRef = useRef(0);
   const preferredFacingModeRef = useRef<CameraFacingMode>("environment");
   const cameraMirroredRef = useRef(false);
@@ -266,6 +510,8 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
   const [calibrationProgress, setCalibrationProgress] = useState(0);
   const [calibrationMessage, setCalibrationMessage] = useState("");
   const [clipBusy, setClipBusy] = useState(false);
+  const [livePoseState, setLivePoseState] = useState<LivePoseState>("searching");
+  const [liveGuidanceEpoch, setLiveGuidanceEpoch] = useState(0);
 
   const getNextEngineTimestamp = useCallback(() => {
     const next = Math.max(performance.now(), engineTimestampRef.current + 0.01);
@@ -277,6 +523,49 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     modeRef.current = nextMode;
     setMode(nextMode);
   }, []);
+
+  const updateLivePoseState = useCallback((nextState: LivePoseState) => {
+    if (livePoseStateRef.current === nextState) {
+      return;
+    }
+    if (livePoseStateRef.current === "tracked" && nextState !== "tracked") {
+      setLiveGuidanceEpoch((current) => current + 1);
+    }
+    livePoseStateRef.current = nextState;
+    setLivePoseState(nextState);
+  }, []);
+
+  const clearLiveCoachingState = useCallback(
+    (nextState: LivePoseState, message: string, discardCalibration: boolean) => {
+      analyzerRef.current.reset();
+      calibrationStartedAtRef.current = 0;
+      calibrationSamplesRef.current = [];
+      lastUiUpdateRef.current = 0;
+      setAnalysis(null);
+      setInferenceMs(null);
+      setIsCalibrating(false);
+      setCalibrationProgress(0);
+      setCalibrationMessage(message);
+      if (discardCalibration) {
+        calibrationRef.current = null;
+        setCalibration(null);
+      }
+      updateLivePoseState(nextState);
+
+      const canvas = overlayRef.current;
+      const video = videoRef.current;
+      if (canvas && video) {
+        drawPoseOverlay(
+          canvas,
+          video,
+          null,
+          cameraMirroredRef.current,
+          anatomyLayersRef.current
+        );
+      }
+    },
+    [updateLivePoseState]
+  );
 
   const releaseMatchingFrame = useCallback(
     (worker: Worker, channel: InFlightFrame["channel"], jobId: number, frameId: number) => {
@@ -346,12 +635,8 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           inFlightRef.current = null;
         }
         modelReadyRef.current = false;
-        analyzerRef.current.reset();
-        calibrationStartedAtRef.current = 0;
-        calibrationSamplesRef.current = [];
-        setAnalysis(null);
-        setIsCalibrating(false);
-        setCalibrationProgress(0);
+        resetLiveSubjectGate(liveSubjectGateRef.current);
+        clearLiveCoachingState("searching", "", true);
         setModelDelegate(null);
         setModelStatus("error");
         setModelError(message);
@@ -416,13 +701,24 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
         const canvas = overlayRef.current;
         const video = videoRef.current;
 
-        if (!isFinitePose(message.landmarks, message.worldLandmarks)) {
-          if (performance.now() - lastPoseAtRef.current > LOST_POSE_TIMEOUT_MS) {
-            setAnalysis(null);
-            if (canvas && video) {
-              drawPoseOverlay(canvas, video, null, cameraMirroredRef.current, anatomyLayersRef.current);
-            }
+        if (message.poseCount !== 1) {
+          const ambiguous = message.poseCount !== 0;
+          if (ambiguous) {
+            resetLiveSubjectGate(liveSubjectGateRef.current);
+          } else {
+            retainLiveSubjectForReacquisition(liveSubjectGateRef.current);
           }
+          clearLiveCoachingState(
+            ambiguous ? "ambiguous" : "searching",
+            ambiguous ? "Keep only one person in the camera view." : "",
+            ambiguous
+          );
+          return;
+        }
+
+        if (!isFinitePose(message.landmarks, message.worldLandmarks)) {
+          retainLiveSubjectForReacquisition(liveSubjectGateRef.current);
+          clearLiveCoachingState("searching", "", false);
           return;
         }
 
@@ -431,8 +727,29 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
           landmarks: message.landmarks!,
           worldLandmarks: message.worldLandmarks!
         };
-        lastPoseAtRef.current = performance.now();
+        const subjectDecision = evaluateLiveSubject(
+          liveSubjectGateRef.current,
+          poseFrame.landmarks,
+          poseFrame.worldLandmarks,
+          poseFrame.timestamp
+        );
+        if (subjectDecision !== "accepted") {
+          const discontinuity = subjectDecision === "discontinuity";
+          clearLiveCoachingState(
+            subjectDecision === "invalid" ? "searching" : "reacquiring",
+            discontinuity
+              ? "Subject tracking restarted. Hold one position while the coach reacquires you."
+              : "",
+            discontinuity
+          );
+          return;
+        }
 
+        const wasTracked = livePoseStateRef.current === "tracked";
+        updateLivePoseState("tracked");
+        if (!wasTracked) {
+          setCalibrationMessage("");
+        }
         if (calibrationStartedAtRef.current > 0) {
           calibrationSamplesRef.current.push(poseFrame);
           const elapsed = message.sourceTimestamp - calibrationStartedAtRef.current;
@@ -478,9 +795,8 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
             lastUiUpdateRef.current = message.sourceTimestamp;
           }
         } catch {
-          if (performance.now() - lastPoseAtRef.current > LOST_POSE_TIMEOUT_MS) {
-            setAnalysis(null);
-          }
+          retainLiveSubjectForReacquisition(liveSubjectGateRef.current);
+          clearLiveCoachingState("searching", "", false);
         }
       };
 
@@ -528,7 +844,7 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       }
       workerRef.current = null;
     };
-  }, [releaseMatchingFrame]);
+  }, [clearLiveCoachingState, releaseMatchingFrame, updateLivePoseState]);
 
   const cancelCalibration = useCallback(() => {
     calibrationStartedAtRef.current = 0;
@@ -553,15 +869,12 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     cameraRequestIdRef.current += 1;
     cameraRequestInFlightRef.current = false;
     releaseCamera();
-    cancelCalibration();
-    analyzerRef.current.reset();
+    resetLiveSubjectGate(liveSubjectGateRef.current);
+    clearLiveCoachingState("searching", "", true);
     abandonFrameOperation("live", endingLiveJobId, true);
     liveJobIdRef.current += 1;
     liveFrameIdRef.current = 0;
     liveSourceTimestampRef.current = Number.NEGATIVE_INFINITY;
-    setAnalysis(null);
-    setInferenceMs(null);
-    setCalibrationMessage("");
     setCameraOptions([]);
     setActiveCameraId(null);
     setCameraOptics(null);
@@ -573,7 +886,12 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     if (canvas) {
       canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
     }
-  }, [abandonFrameOperation, cancelCalibration, releaseCamera, updateMode]);
+  }, [
+    abandonFrameOperation,
+    clearLiveCoachingState,
+    releaseCamera,
+    updateMode
+  ]);
 
   const refreshCameraOptions = useCallback(async () => {
     const mediaDevices = navigator.mediaDevices;
@@ -629,14 +947,11 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     liveJobIdRef.current += 1;
     liveFrameIdRef.current = 0;
     liveSourceTimestampRef.current = Number.NEGATIVE_INFINITY;
+    resetLiveSubjectGate(liveSubjectGateRef.current);
+    clearLiveCoachingState("searching", "", true);
     setSource("camera");
     updateMode("requesting");
     setCameraError("");
-    setCalibrationMessage("");
-    setAnalysis(null);
-    setInferenceMs(null);
-    cancelCalibration();
-    analyzerRef.current.reset();
     releaseCamera();
 
     try {
@@ -677,7 +992,6 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       setActiveCameraId(settings.deviceId ?? (usedDeviceFallback ? null : selectedDeviceId ?? null));
       videoTrack.onended = () => endSession();
       lastUiUpdateRef.current = 0;
-      lastPoseAtRef.current = performance.now();
       updateMode("live");
 
       void refreshCameraOptions();
@@ -698,7 +1012,14 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
         cameraRequestInFlightRef.current = false;
       }
     }
-  }, [abandonFrameOperation, cancelCalibration, endSession, refreshCameraOptions, releaseCamera, updateMode]);
+  }, [
+    abandonFrameOperation,
+    clearLiveCoachingState,
+    endSession,
+    refreshCameraOptions,
+    releaseCamera,
+    updateMode
+  ]);
 
   const startCamera = useCallback(
     (facingMode: CameraFacingMode = "environment") => requestCamera(facingMode),
@@ -740,23 +1061,27 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     cameraRequestIdRef.current += 1;
     cameraRequestInFlightRef.current = false;
     releaseCamera();
-    cancelCalibration();
+    resetLiveSubjectGate(liveSubjectGateRef.current);
+    clearLiveCoachingState("searching", "", true);
     setCameraError("");
-    setCalibrationMessage("");
-    setAnalysis(null);
     setCameraOptions([]);
     setActiveCameraId(null);
     setCameraOptics(null);
     cameraMirroredRef.current = false;
     setSource("demo");
     updateMode("demo");
-  }, [cancelCalibration, releaseCamera, updateMode]);
+  }, [clearLiveCoachingState, releaseCamera, updateMode]);
 
   const togglePause = useCallback(() => {
     const currentMode = modeRef.current;
     let nextMode = currentMode;
     if (currentMode === "live" || currentMode === "demo") {
-      cancelCalibration();
+      if (currentMode === "live") {
+        retainLiveSubjectForReacquisition(liveSubjectGateRef.current);
+        clearLiveCoachingState("searching", "", false);
+      } else {
+        cancelCalibration();
+      }
       nextMode = "paused";
     } else if (currentMode === "paused") {
       if (streamRef.current) {
@@ -767,10 +1092,10 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       }
     }
     updateMode(nextMode);
-  }, [abandonFrameOperation, cancelCalibration, updateMode]);
+  }, [abandonFrameOperation, cancelCalibration, clearLiveCoachingState, updateMode]);
 
   const startCalibration = useCallback(() => {
-    if (mode !== "live") {
+    if (mode !== "live" || livePoseStateRef.current !== "tracked") {
       return;
     }
     calibrationSamplesRef.current = [];
@@ -803,6 +1128,13 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       }
       if (activeClipRunRef.current) {
         return Promise.reject(new Error("Another clip is already being analyzed."));
+      }
+      if (bitmapExtractionLeaseRef.current) {
+        return Promise.reject(
+          new Error(
+            "The previous video frame extraction is still stopping. Wait for it to finish before retrying."
+          )
+        );
       }
       const selectedDuration = endTime - startTime;
       if (
@@ -1011,7 +1343,12 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
         };
 
         const submitFrame = async (sourceTimestamp: number) => {
-          if (!active || inFlightRef.current || !workerRef.current) {
+          if (
+            !active ||
+            inFlightRef.current ||
+            bitmapExtractionLeaseRef.current ||
+            !workerRef.current
+          ) {
             return;
           }
 
@@ -1030,11 +1367,26 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
 
           let frame: ImageBitmap | null = null;
           try {
-            frame = await createImageBitmap(video, sourceCrop.x, sourceCrop.y, sourceCrop.width, sourceCrop.height, {
-              resizeWidth: Math.round(output.width),
-              resizeHeight: Math.round(output.height),
-              resizeQuality: "medium"
-            });
+            const extraction = createImageBitmap(
+              video,
+              sourceCrop.x,
+              sourceCrop.y,
+              sourceCrop.width,
+              sourceCrop.height,
+              {
+                resizeWidth: Math.round(output.width),
+                resizeHeight: Math.round(output.height),
+                resizeQuality: "medium"
+              }
+            );
+            bitmapExtractionLeaseRef.current = extraction;
+            try {
+              frame = await extraction;
+            } finally {
+              if (bitmapExtractionLeaseRef.current === extraction) {
+                bitmapExtractionLeaseRef.current = null;
+              }
+            }
             if (
               !active ||
               workerRef.current !== worker ||
@@ -1334,7 +1686,12 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     video.addEventListener("resize", syncVideoDimensions);
 
     const submitFrame = async (sourceTimestamp: number) => {
-      if (!active || inFlightRef.current || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (
+        !active ||
+        inFlightRef.current ||
+        bitmapExtractionLeaseRef.current ||
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
         return;
       }
       if (!Number.isFinite(sourceTimestamp) || sourceTimestamp <= liveSourceTimestampRef.current) {
@@ -1357,7 +1714,15 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
       inFlightRef.current = operation;
       let frame: ImageBitmap | null = null;
       try {
-        frame = await createImageBitmap(video);
+        const extraction = createImageBitmap(video);
+        bitmapExtractionLeaseRef.current = extraction;
+        try {
+          frame = await extraction;
+        } finally {
+          if (bitmapExtractionLeaseRef.current === extraction) {
+            bitmapExtractionLeaseRef.current = null;
+          }
+        }
         if (
           !active ||
           workerRef.current !== worker ||
@@ -1476,6 +1841,8 @@ export function usePoseCoach(settings: CoachSettings, anatomyLayers: AnatomyLaye
     isCalibrating,
     calibrationProgress,
     calibrationMessage,
+    livePoseState,
+    liveGuidanceEpoch,
     clipBusy,
     startCamera,
     selectCamera,

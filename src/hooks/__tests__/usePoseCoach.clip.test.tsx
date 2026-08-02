@@ -168,6 +168,51 @@ function makeFinitePose(): {
   return { landmarks, worldLandmarks };
 }
 
+function makeLivePose(centerX = 0.5): {
+  landmarks: NormalizedLandmark[];
+  worldLandmarks: Landmark[];
+} {
+  const pose = makeFinitePose();
+  for (const landmark of pose.landmarks) {
+    landmark.x = centerX;
+  }
+  pose.landmarks[7].x = centerX - 0.01;
+  pose.landmarks[8].x = centerX + 0.01;
+  pose.landmarks[11].x = centerX - 0.04;
+  pose.landmarks[12].x = centerX + 0.04;
+  pose.landmarks[23].x = centerX - 0.02;
+  pose.landmarks[24].x = centerX + 0.02;
+  pose.landmarks[27].x = centerX - 0.02;
+  pose.landmarks[28].x = centerX + 0.02;
+  return pose;
+}
+
+function makeCalibratableLivePose(centerX = 0.5): {
+  landmarks: NormalizedLandmark[];
+  worldLandmarks: Landmark[];
+} {
+  const pose = makeLivePose(centerX);
+  const hipRadians = (168 * Math.PI) / 180;
+  const kneeRadians = (174 * Math.PI) / 180;
+  const shoulderOffsetX = Math.sin(hipRadians);
+  const shoulderOffsetY = Math.cos(hipRadians);
+  const ankleOffsetX = Math.sin(kneeRadians);
+  const ankleOffsetY = -Math.cos(kneeRadians);
+  const setWorld = (index: number, x: number, y: number) => {
+    pose.worldLandmarks[index] = { x, y, z: 0, visibility: 1 };
+  };
+
+  setWorld(23, -0.02, 0);
+  setWorld(24, 0.02, 0);
+  setWorld(25, -0.02, 1);
+  setWorld(26, 0.02, 1);
+  setWorld(27, -0.02 + ankleOffsetX, 1 + ankleOffsetY);
+  setWorld(28, 0.02 + ankleOffsetX, 1 + ankleOffsetY);
+  setWorld(11, -0.02 + shoulderOffsetX, shoulderOffsetY);
+  setWorld(12, 0.02 + shoulderOffsetX, shoulderOffsetY);
+  return pose;
+}
+
 function latestWorker(): WorkerStub {
   const worker = WorkerStub.instances.at(-1);
   if (!worker) {
@@ -239,6 +284,81 @@ async function flushMicrotasks(iterations = 8) {
       await Promise.resolve();
     }
   });
+}
+
+async function startLiveSession(
+  hook: ReturnType<typeof renderHook<ReturnType<typeof usePoseCoach>, unknown>>
+) {
+  const liveVideo = makeVideo();
+  Object.defineProperty(liveVideo, "readyState", {
+    configurable: true,
+    value: HTMLMediaElement.HAVE_CURRENT_DATA
+  });
+  const track = {
+    onended: null,
+    stop: vi.fn(),
+    getSettings: vi.fn(() => ({ facingMode: "environment" }))
+  } as unknown as MediaStreamTrack;
+  const stream = {
+    getTracks: () => [track],
+    getVideoTracks: () => [track]
+  } as unknown as MediaStream;
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(async () => stream) }
+  });
+
+  act(() => hook.result.current.attachVideo(liveVideo));
+  await act(async () => hook.result.current.startCamera());
+  await waitFor(() => expect(hook.result.current.mode).toBe("live"));
+  await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+  return { liveVideo, track };
+}
+
+async function emitNextLiveResult(
+  worker: WorkerStub,
+  mediaTimeSeconds: number,
+  result: Parameters<WorkerStub["emitResult"]>[1]
+) {
+  const requestIndex = worker.frameRequests.length;
+  await fireNextVideoFrame(mediaTimeSeconds);
+  await waitFor(() => expect(worker.frameRequests).toHaveLength(requestIndex + 1));
+  await emitResult(worker, worker.frameRequests[requestIndex], result);
+  await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+}
+
+async function acquireLiveSubject(
+  hook: ReturnType<typeof renderHook<ReturnType<typeof usePoseCoach>, unknown>>,
+  worker: WorkerStub,
+  centerX = 0.5,
+  firstTimestamp = 0.1
+) {
+  await emitNextLiveResult(worker, firstTimestamp, { poseCount: 1, ...makeLivePose(centerX) });
+  await emitNextLiveResult(worker, firstTimestamp + 0.1, {
+    poseCount: 1,
+    ...makeLivePose(centerX + 0.003)
+  });
+  await emitNextLiveResult(worker, firstTimestamp + 0.2, {
+    poseCount: 1,
+    ...makeLivePose(centerX + 0.006)
+  });
+  await waitFor(() => expect(hook.result.current.livePoseState).toBe("tracked"));
+}
+
+async function saveLiveCalibration(
+  hook: ReturnType<typeof renderHook<ReturnType<typeof usePoseCoach>, unknown>>,
+  worker: WorkerStub,
+  centerX = 0.5,
+  firstTimestamp = 0.35
+) {
+  act(() => hook.result.current.startCalibration());
+  for (let index = 0; index < 48; index += 1) {
+    await emitNextLiveResult(worker, firstTimestamp + index * 0.05, {
+      poseCount: 1,
+      ...makeCalibratableLivePose(centerX)
+    });
+  }
+  await waitFor(() => expect(hook.result.current.calibration).not.toBeNull());
 }
 
 describe("usePoseCoach clip analysis protocol", () => {
@@ -858,7 +978,7 @@ describe("usePoseCoach clip analysis protocol", () => {
     expect(WorkerStub.instances).toHaveLength(1);
   });
 
-  it("times out frame extraction separately and keeps late bitmap completion isolated", async () => {
+  it("retains a timed-out extraction lease until settlement, then accepts a clean retry", async () => {
     const firstBitmap = deferred<ImageBitmap>();
     const firstClose = vi.fn();
     const laterClose = vi.fn();
@@ -899,37 +1019,78 @@ describe("usePoseCoach clip analysis protocol", () => {
     });
     expect(worker.terminate).not.toHaveBeenCalled();
 
+    await expect(hook.result.current.analyzeClip(options(video))).rejects.toThrow(
+      /previous.*frame extraction.*still/i
+    );
+    expect(createImageBitmapMock).toHaveBeenCalledTimes(1);
+    expect(worker.frameRequests).toHaveLength(0);
+
+    firstBitmap.resolve({ close: firstClose } as unknown as ImageBitmap);
+    await flushMicrotasks();
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(worker.frameRequests).toHaveLength(0);
+
     let secondRun!: ReturnType<typeof hook.result.current.analyzeClip>;
     act(() => {
       secondRun = hook.result.current.analyzeClip(options(video));
     });
     await flushMicrotasks();
-    const repeatedCallback = pendingVideoFrames.values().next().value as
-      | VideoFrameRequestCallback
-      | undefined;
+    expect(pendingVideoFrames).toHaveLength(1);
     await fireNextVideoFrame(0.1);
     await flushMicrotasks();
     expect(createImageBitmapMock).toHaveBeenCalledTimes(2);
     expect(worker.frameRequests).toHaveLength(1);
+    await emitResult(worker, worker.frameRequests[0]);
+    await flushMicrotasks();
+    expect(pendingVideoFrames).toHaveLength(1);
+    await fireNextVideoFrame(4);
+    await expect(secondRun).resolves.toMatchObject({ processedFrames: 1 });
+  });
+
+  it("retains a cancelled extraction lease and closes its stale bitmap before recovery", async () => {
+    const firstBitmap = deferred<ImageBitmap>();
+    const firstClose = vi.fn();
+    createImageBitmapMock
+      .mockReset()
+      .mockImplementationOnce(() => firstBitmap.promise)
+      .mockResolvedValue({ close: vi.fn() } as unknown as ImageBitmap);
+
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const video = makeVideo();
+    let cancelledRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+
+    act(() => {
+      cancelledRun = hook.result.current.analyzeClip(options(video));
+    });
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await fireNextVideoFrame(0.1);
+    expect(createImageBitmapMock).toHaveBeenCalledOnce();
+
+    act(() => hook.result.current.cancelClipAnalysis());
+    await expect(cancelledRun).rejects.toMatchObject({ name: "AbortError" });
+    await expect(hook.result.current.analyzeClip(options(video))).rejects.toThrow(
+      /previous.*frame extraction.*still/i
+    );
+    expect(createImageBitmapMock).toHaveBeenCalledOnce();
 
     firstBitmap.resolve({ close: firstClose } as unknown as ImageBitmap);
     await flushMicrotasks();
     expect(firstClose).toHaveBeenCalledOnce();
-    expect(worker.frameRequests).toHaveLength(1);
+    expect(worker.frameRequests).toHaveLength(0);
 
-    await act(async () => {
-      repeatedCallback?.(600, { mediaTime: 0.2 } as VideoFrameCallbackMetadata);
-      await Promise.resolve();
+    let recoveredRun!: ReturnType<typeof hook.result.current.analyzeClip>;
+    act(() => {
+      recoveredRun = hook.result.current.analyzeClip(options(video));
     });
-    await flushMicrotasks();
-    expect(createImageBitmapMock).toHaveBeenCalledTimes(2);
-    expect(worker.frameRequests).toHaveLength(1);
-    pendingVideoFrames.clear();
-
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await fireNextVideoFrame(0.1);
+    await waitFor(() => expect(worker.frameRequests).toHaveLength(1));
     await emitResult(worker, worker.frameRequests[0]);
-    await flushMicrotasks();
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
     await fireNextVideoFrame(4);
-    await expect(secondRun).resolves.toMatchObject({ processedFrames: 1 });
+    await expect(recoveredRun).resolves.toMatchObject({ processedFrames: 1 });
   });
 
   it("replaces a silent Worker after the processing timeout and accepts a new job", async () => {
@@ -1322,5 +1483,196 @@ describe("usePoseCoach clip analysis protocol", () => {
     await fireNextVideoFrame(4);
     await expect(recoveredRun).resolves.toMatchObject({ processedFrames: 1 });
 
+  });
+
+  it("accepts smooth one-person live coaching only after bounded reacquisition", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+
+    expect(hook.result.current.livePoseState).toBe("searching");
+    await emitNextLiveResult(worker, 0.1, { poseCount: 1, ...makeLivePose(0.5) });
+    expect(hook.result.current.livePoseState).toBe("reacquiring");
+    expect(hook.result.current.analysis).toBeNull();
+    await emitNextLiveResult(worker, 0.2, { poseCount: 1, ...makeLivePose(0.503) });
+    expect(hook.result.current.analysis).toBeNull();
+    await emitNextLiveResult(worker, 0.3, { poseCount: 1, ...makeLivePose(0.506) });
+
+    await waitFor(() => expect(hook.result.current.livePoseState).toBe("tracked"));
+    expect(hook.result.current.analysis).not.toBeNull();
+
+    await emitNextLiveResult(worker, 0.4, { poseCount: 1, ...makeLivePose(0.51) });
+    expect(hook.result.current.livePoseState).toBe("tracked");
+    expect(hook.result.current.analysis?.landmarks[11].x).toBeCloseTo(0.47);
+  });
+
+  it("rejects zero and multiple live poses and resets active calibration and guidance evidence", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker);
+
+    act(() => hook.result.current.startCalibration());
+    await emitNextLiveResult(worker, 0.4, { poseCount: 1, ...makeLivePose(0.508) });
+    expect(hook.result.current.isCalibrating).toBe(true);
+    expect(hook.result.current.calibrationProgress).toBeGreaterThan(0);
+
+    await emitNextLiveResult(worker, 0.5, { poseCount: 2, ...makeLivePose(0.51) });
+    expect(hook.result.current.livePoseState).toBe("ambiguous");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.isCalibrating).toBe(false);
+    expect(hook.result.current.calibrationProgress).toBe(0);
+    expect(hook.result.current.calibrationMessage).toMatch(/only one person/i);
+
+    await emitNextLiveResult(worker, 0.6, { poseCount: 0 });
+    expect(hook.result.current.livePoseState).toBe("searching");
+    expect(hook.result.current.analysis).toBeNull();
+  });
+
+  it("rejects a subject discontinuity, clears retained history, and reacquires the new subject", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+    expect(hook.result.current.analysis).not.toBeNull();
+
+    await emitNextLiveResult(worker, 0.4, { poseCount: 1, ...makeLivePose(0.72) });
+    expect(hook.result.current.livePoseState).toBe("reacquiring");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.calibrationMessage).toMatch(/tracking restarted/i);
+
+    await emitNextLiveResult(worker, 0.5, { poseCount: 1, ...makeLivePose(0.718) });
+    expect(hook.result.current.analysis).toBeNull();
+    await emitNextLiveResult(worker, 0.6, { poseCount: 1, ...makeLivePose(0.716) });
+
+    await waitFor(() => expect(hook.result.current.livePoseState).toBe("tracked"));
+    expect(hook.result.current.analysis?.landmarks[11].x).toBeCloseTo(0.676);
+  });
+
+  it("retains identity across a lost pose so a different returning subject cannot inherit state", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+
+    act(() => hook.result.current.startCalibration());
+    await emitNextLiveResult(worker, 0.35, { poseCount: 1, ...makeLivePose(0.326) });
+    expect(hook.result.current.isCalibrating).toBe(true);
+    expect(hook.result.current.calibrationProgress).toBeGreaterThan(0);
+
+    await emitNextLiveResult(worker, 0.4, { poseCount: 0 });
+    expect(hook.result.current.livePoseState).toBe("searching");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.isCalibrating).toBe(false);
+
+    await emitNextLiveResult(worker, 0.45, { poseCount: 1, ...makeLivePose(0.72) });
+    expect(hook.result.current.livePoseState).toBe("reacquiring");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.calibration).toBeNull();
+    expect(hook.result.current.calibrationMessage).toMatch(/tracking restarted/i);
+
+    await emitNextLiveResult(worker, 0.55, { poseCount: 1, ...makeLivePose(0.718) });
+    await emitNextLiveResult(worker, 0.65, { poseCount: 1, ...makeLivePose(0.716) });
+    await waitFor(() => expect(hook.result.current.livePoseState).toBe("tracked"));
+    expect(hook.result.current.analysis?.landmarks[11].x).toBeCloseTo(0.676);
+  });
+
+  it("retains identity across an invalid signature before rejecting a different subject", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+
+    const lowVisibilityPose = makeLivePose(0.326);
+    for (const index of [11, 12, 23, 24]) {
+      lowVisibilityPose.landmarks[index].visibility = 0.1;
+    }
+    await emitNextLiveResult(worker, 0.4, {
+      poseCount: 1,
+      ...lowVisibilityPose
+    });
+    expect(hook.result.current.livePoseState).toBe("searching");
+    expect(hook.result.current.analysis).toBeNull();
+
+    await emitNextLiveResult(worker, 0.45, { poseCount: 1, ...makeLivePose(0.72) });
+    expect(hook.result.current.livePoseState).toBe("reacquiring");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.calibrationMessage).toMatch(/tracking restarted/i);
+  });
+
+  it("keeps a saved reference only across a short same-subject pause", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+    await saveLiveCalibration(hook, worker, 0.326);
+
+    expect(hook.result.current.calibration?.sampleCount).toBe(48);
+    act(() => hook.result.current.togglePause());
+    expect(hook.result.current.mode).toBe("paused");
+    expect(hook.result.current.calibration).not.toBeNull();
+
+    act(() => hook.result.current.togglePause());
+    await waitFor(() => expect(hook.result.current.mode).toBe("live"));
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await emitNextLiveResult(worker, 2.75, { poseCount: 1, ...makeCalibratableLivePose(0.326) });
+    await emitNextLiveResult(worker, 2.8, { poseCount: 1, ...makeCalibratableLivePose(0.329) });
+    await emitNextLiveResult(worker, 2.85, { poseCount: 1, ...makeCalibratableLivePose(0.332) });
+    await waitFor(() => expect(hook.result.current.livePoseState).toBe("tracked"));
+    expect(hook.result.current.calibration).not.toBeNull();
+
+    act(() => hook.result.current.togglePause());
+    act(() => hook.result.current.togglePause());
+    await waitFor(() => expect(pendingVideoFrames).toHaveLength(1));
+    await emitNextLiveResult(worker, 2.9, { poseCount: 1, ...makeCalibratableLivePose(0.72) });
+
+    expect(hook.result.current.livePoseState).toBe("reacquiring");
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.calibration).toBeNull();
+    expect(hook.result.current.calibrationMessage).toMatch(/tracking restarted/i);
+  });
+
+  it("discards a saved reference when the camera session ends", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const { track } = await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+    await saveLiveCalibration(hook, worker, 0.326);
+
+    expect(hook.result.current.calibration?.sampleCount).toBe(48);
+    act(() => hook.result.current.endSession());
+
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(hook.result.current.mode).toBe("ready");
+    expect(hook.result.current.livePoseState).toBe("searching");
+    expect(hook.result.current.calibration).toBeNull();
+    expect(hook.result.current.analysis).toBeNull();
+  });
+
+  it("discards a saved reference before switching cameras", async () => {
+    const hook = renderHook(() => usePoseCoach(settings, layers));
+    await makeModelReady(hook);
+    const worker = latestWorker();
+    const { track } = await startLiveSession(hook);
+    await acquireLiveSubject(hook, worker, 0.32);
+    await saveLiveCalibration(hook, worker, 0.326);
+
+    expect(hook.result.current.calibration?.sampleCount).toBe(48);
+    await act(async () => {
+      hook.result.current.selectCamera("camera-2");
+      await Promise.resolve();
+    });
+
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(hook.result.current.calibration).toBeNull();
+    expect(hook.result.current.analysis).toBeNull();
+    expect(hook.result.current.livePoseState).toBe("searching");
   });
 });

@@ -331,7 +331,7 @@ export function PoseScene({ analysis, layers }: PoseSceneProps) {
     key.position.set(2, 4, 3);
     scene.add(key);
 
-    const rim = new THREE.DirectionalLight(0x84dcc6, 1.15);
+    const rim = new THREE.DirectionalLight(0xd4142a, 1.15);
     rim.position.set(-3, 1.5, -2.5);
     scene.add(rim);
 
@@ -441,7 +441,7 @@ export function PoseScene({ analysis, layers }: PoseSceneProps) {
     const trailGeometry = new THREE.BufferGeometry();
     const trailPositions = new Float32Array(90 * 3);
     trailGeometry.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
-    const trailMaterial = new THREE.LineBasicMaterial({ color: 0x84dcc6, transparent: true, opacity: 0.82 });
+    const trailMaterial = new THREE.LineBasicMaterial({ color: 0xd4142a, transparent: true, opacity: 0.82 });
     const trail = new THREE.Line(trailGeometry, trailMaterial);
     materials.push(trailMaterial);
     geometries.push(trailGeometry);

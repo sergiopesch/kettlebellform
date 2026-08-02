@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.16.0",
   "engines": {
     "node": ">=24.0.0 <25.0.0",
     "npm": ">=11.0.0 <12.0.0"
@@ -12,16 +13,22 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "build:verify": "npm run build && node scripts/verify-build.mjs",
+    "voice:master": "node scripts/master-coach-voice-pack.mjs",
+    "voice:verify": "node scripts/verify-coach-voice-pack.mjs",
+    "voice:runtime:check": "python3 scripts/check-coach-voice-runtime.py",
+    "voice:references:check": "python3 scripts/generate-coach-voice-references.py self-check",
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e:install": "playwright install chromium firefox webkit",
     "test:e2e": "playwright test",
-    "test:realtime:live": "node scripts/live-realtime-smoke.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build:verify"
+    "audit:all": "npm audit --audit-level=high",
+    "verify:all": "npm run check && npm run test:e2e && npm run audit:all",
+    "check": "npm run voice:runtime:check && npm run voice:verify && npm run voice:references:check && npm run lint && npm run typecheck && npm run test:coverage && npm run build:verify"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
@@ -30,8 +37,7 @@
     "lucide-react": "1.26.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "three": "0.185.1",
-    "ws": "8.21.1"
+    "three": "0.185.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -39,11 +45,10 @@
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
-    "@types/node": "26.1.1",
+    "@types/node": "24.13.3",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/three": "0.185.1",
-    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.4",
     "@vitest/coverage-v8": "4.1.9",
     "eslint": "10.7.0",

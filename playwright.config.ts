@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = "http://127.0.0.1:4173";
+const baseURL = "http://127.0.0.1:43917";
 const continuousIntegration = Boolean(process.env.CI);
 
 export default defineConfig({
@@ -16,20 +16,29 @@ export default defineConfig({
   },
   use: {
     baseURL,
-    trace: "off",
-    screenshot: "off",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
     video: "off"
   },
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4173 --strictPort",
+    command:
+      "npm run build:verify && npm run preview -- --host 127.0.0.1 --port 43917 --strictPort",
     url: baseURL,
-    reuseExistingServer: !continuousIntegration,
+    reuseExistingServer: false,
     timeout: 120_000
   },
   projects: [
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      name: "firefox",
+      use: { ...devices["Desktop Firefox"] }
+    },
+    {
+      name: "webkit",
+      use: { ...devices["Desktop Safari"] }
     }
   ]
 });

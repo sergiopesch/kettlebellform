@@ -688,7 +688,7 @@ export default function VideoClipWorkspace({
               <span className="eyebrow">Analysis setup</span>
               <h2>Frame the full movement</h2>
             </div>
-            <p className="clip-rail-copy">Select 4–10 seconds containing at least three full swings. Keep your head, hands, bell, feet, and the floor inside the lime frame; the full source remains visible and untouched.</p>
+            <p className="clip-rail-copy">Select 4–10 seconds containing at least three full swings. Keep your head, hands, bell, feet, and the floor inside the analysis frame; the full source remains visible and untouched.</p>
             <div className="clip-frame-controls" role="group" aria-label="Analysis frame size">
               <button className="button button-secondary" type="button" onClick={() => adjustCropScale(0.88)}><Crop aria-hidden="true" /><span>Frame tighter</span></button>
               <button className="button button-secondary" type="button" onClick={() => adjustCropScale(1.14)}><Maximize2 aria-hidden="true" /><span>Frame wider</span></button>

@@ -17,33 +17,31 @@ export type CoachVoiceProfile = Readonly<{
   accessibleLabel: string;
   description: string;
   aiDisclosure: string;
-  openAIVoice: "cedar" | "marin";
-  instructions: string;
+  characterName: string;
+  packId: "maritime-command-v2";
 }>;
 
 const AI_VOICE_DISCLOSURE =
-  "AI-generated speech using an OpenAI built-in voice; this is not a recording of a human coach.";
+  "Original AI-generated character voice; not a human coach recording and not affiliated with a military unit.";
 
 export const COACH_VOICE_PROFILES = Object.freeze([
   Object.freeze({
     id: "male-command",
-    label: "Command · British male",
-    accessibleLabel: "British male command coach, AI-generated",
-    description: "Crisp, calm British command delivery with a masculine presentation.",
+    label: "Maritime Command · British male",
+    accessibleLabel: "British male Maritime Command coach, AI-generated",
+    description: "Brisk British leadership delivery with disciplined warmth and forward drive.",
     aiDisclosure: AI_VOICE_DISCLOSURE,
-    openAIVoice: "cedar",
-    instructions:
-      "Speak in modern British English with a masculine presentation. Sound like a calm, disciplined military fitness instructor: concise, assured, and easy to hear. Never shout, intimidate, embellish, or add words."
+    characterName: "Harbour",
+    packId: "maritime-command-v2"
   }),
   Object.freeze({
     id: "female-command",
-    label: "Command · British female",
-    accessibleLabel: "British female command coach, AI-generated",
-    description: "Crisp, calm British command delivery with a feminine presentation.",
+    label: "Maritime Command · British female",
+    accessibleLabel: "British female Maritime Command coach, AI-generated",
+    description: "Brisk British leadership delivery with disciplined warmth and forward drive.",
     aiDisclosure: AI_VOICE_DISCLOSURE,
-    openAIVoice: "marin",
-    instructions:
-      "Speak in modern British English with a feminine presentation. Sound like a calm, disciplined military fitness instructor: concise, assured, and easy to hear. Never shout, intimidate, embellish, or add words."
+    characterName: "Crown",
+    packId: "maritime-command-v2"
   })
 ] satisfies readonly CoachVoiceProfile[]);
 

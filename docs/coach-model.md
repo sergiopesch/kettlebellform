@@ -27,7 +27,7 @@ The kettlebell is not separately detected. Wrist midpoint is a proxy for hand/be
 
 ## Calibration gates
 
-Calibration is optional but recommended. Without a saved reference, the analyzer uses conservative default angles and the UI says so. A reference lasts only for the current browser session.
+Calibration is optional but recommended. Without a saved reference, the analyzer uses conservative default angles and the UI says so. A reference belongs only to the continuously verified subject in the current camera session. A short pause may retain it only when geometric continuity is reacquired; ambiguity, identity discontinuity, camera switching, demo mode, model failure, or session end discards it.
 
 The live capture waits for at least **48 frames** spanning at least **2,000 ms** before attempting to save a reference. The profile validator then fails closed unless all of the following hold:
 
@@ -59,9 +59,11 @@ These are presentation heuristics, not camera-distance measurements. A “positi
 
 Visual state is always present. Optional speech requires correction states to remain stable for 800 ms and ready/finding states for 1,200 ms, enforces at least three seconds between different announcements, and repeats an unresolved correction no more than once every seven seconds. Automatic speech is disabled during active swing phases, for four seconds after recent movement or a tracking dropout, and during calibration, demo, pause, hidden-page, and ended-session states.
 
-After explicit opt-in, the primary speech path uses `gpt-realtime-2.1` as an output-only renderer over receive-only WebRTC. The browser has no Realtime data channel and can send only a validated message ID to the same-origin cue endpoint. A short-lived signed capability binds that request to the call, profile, pseudonymous client, and expiry; the trusted server maps the ID to exact allowlisted text and constructs every OpenAI sideband event. No analyzer-generated or browser-supplied free text is eligible. The male-presentation British command profile uses the built-in `cedar` voice and the female-presentation British command profile uses built-in `marin`. Both are disclosed as AI-generated delivery profiles. They are not recordings of a coach, cloned voices, or custom voices.
+After explicit opt-in, the primary speech path uses the static `maritime-command-v2` candidate. It contains two original fictional Qwen-designed profiles: **Harbour**, a clean mid-low British baritone, and **Crown**, a clean mid-low British mezzo/alto. Both were designed locally from the same semantic contemporary-British leadership brief and exact reference transcript, with matched brisk pace, attack, confidence, disciplined warmth, and forward drive. Neither profile is a human coach recording, an imitation of a named person, or affiliated with a real military unit. Both are disclosed as AI-generated character voices, and neither is approved for release until blind human listening accepts its accent, energy, naturalness, and intelligibility.
 
-The Realtime peer has no microphone, input-audio, camera, or video track. The pose stream remains on-device: neither video frames nor landmarks are included in voice messages. Changing profile closes the old peer and starts a fresh session because a Realtime voice is immutable after the session has produced audio. Realtime failure preserves visual guidance and may fall back to a browser-reported local English system voice reading the same fixed phrase. Device fallback availability, accent, presentation, and timing vary by browser and operating system; speech recognition never participates.
+The policy contains 11 exact messages. Every profile/message combination is committed as a mastered 24 kHz mono MP3, producing 22 files totalling 323,166 bytes. Harbour's phrases total 19,300 ms and Crown's total 19,133 ms (0.87% delta), and mean integrated loudness differs by 0.036 LU. Source code statically enumerates every asset URL, Vite emits hashed production assets, and the browser fetches only the selected profile's 11 same-origin files after opt-in. Each response is streamed under a fixed 15-second deadline into an exact manifest-sized buffer, with declared/actual overflow, short body, MIME, and SHA-256 checks before Web Audio decoding. Playback accepts only the exact typed message object; analyzer-generated or browser-supplied free text is never eligible. One source is owned at a time. Replacement and profile switching cancel stale playback; disabling, page hiding, session end, timeout, failure, and unmount also abort unfinished pack requests and release response readers. The context is suspended while inactive and closed on unmount.
+
+The branded voice path has no runtime model or speech-provider request, server function, credential, WebRTC peer, WebSocket, microphone track, data channel, arbitrary URL, camera frame, video, or landmark transfer. If pack loading, integrity verification, decoding, or playback fails, visual guidance remains available and the app may use a browser-reported local English system voice for the same fixed message. That fallback voice's availability, accent, identity, quality, timing, and platform privacy behaviour vary by browser and operating system; it must not be described as Harbour or Crown. Speech recognition never participates. Generation provenance, mastering limits, release checks, and private-material handling are defined in [British Maritime Command voice pack](./VOICE_PACK.md).
 
 ## Assessability and abstention
 
@@ -138,7 +140,7 @@ The optional body, muscle, skeleton, and trail layers are illustrative rendering
 - There is no kettlebell detector; wrist midpoint stands in for hand/bell height.
 - Monocular pose estimates are task-, device-, view-, clothing-, lighting-, body-, and occlusion-dependent.
 - Gross head/torso and hip/knee proxies cannot measure segmental spinal position, balance, bracing, breathing, pain, exertion, muscle activity, internal loading, or injury risk.
-- The current analyzer can emit cues within one ordered cycle. It does not yet require three completed reps for a repeatability assessment.
+- The clip analyzer requires three completed reps before returning a pointer. The live analyzer can still emit a provisional observable cue within one ordered cycle, so live technique output does not yet meet the three-repetition validated-release gate in the evidence specification and must not be presented as a validated assessment or repeatability result.
 - The current “Recent reps” bars are presentation values derived from rep count and capture confidence, not measured cycle-to-cycle consistency.
 - Calibration and feedback thresholds are not yet validated across the intended population or device matrix.
 - A live app cannot clear a user for exercise, select a safe bell mass, diagnose a problem, or replace a qualified coach or healthcare professional.
@@ -148,9 +150,9 @@ The optional body, muscle, skeleton, and trail layers are illustrative rendering
 - Analyzer: [`src/lib/swingAnalyzer.ts`](../src/lib/swingAnalyzer.ts)
 - Capture and calibration lifecycle: [`src/hooks/usePoseCoach.ts`](../src/hooks/usePoseCoach.ts)
 - UI abstention and cue presentation: [`src/App.tsx`](../src/App.tsx)
-- Fixed spoken messages and AI-generated delivery profiles: [`src/lib/coachVoiceProfiles.ts`](../src/lib/coachVoiceProfiles.ts)
-- Realtime and device-fallback lifecycle: [`src/hooks/useSpokenFramingCoach.ts`](../src/hooks/useSpokenFramingCoach.ts)
-- Same-origin unified WebRTC session handler: [`server/realtimeSession.ts`](../server/realtimeSession.ts)
-- Signed capability and trusted sideband cue handler: [`server/realtimeSessionToken.ts`](../server/realtimeSessionToken.ts), [`server/realtimeCue.ts`](../server/realtimeCue.ts)
+- Exact spoken-message policy: [`src/lib/coachVoicePolicy.ts`](../src/lib/coachVoicePolicy.ts)
+- Branded profiles and disclosure: [`src/lib/coachVoiceProfiles.ts`](../src/lib/coachVoiceProfiles.ts)
+- Explicit asset map and integrity metadata: [`src/lib/coachVoiceAssets.ts`](../src/lib/coachVoiceAssets.ts), [`src/data/coachVoiceManifest.v2.json`](../src/data/coachVoiceManifest.v2.json)
+- Web Audio pack and device-fallback lifecycle: [`src/lib/coachVoicePackClient.ts`](../src/lib/coachVoicePackClient.ts), [`src/hooks/useSpokenFramingCoach.ts`](../src/hooks/useSpokenFramingCoach.ts)
 - Tests for fail-closed calibration, ordered reps, gaps, and sentinel output: [`src/lib/__tests__/swingAnalyzer.test.ts`](../src/lib/__tests__/swingAnalyzer.test.ts)
 - Evidence, claims, validation, privacy, and accessibility boundary: [Evidence and Safety Specification](./EVIDENCE_AND_SAFETY.md)

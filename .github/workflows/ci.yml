@@ -15,16 +15,18 @@ permissions:
   contents: read
 
 env:
-  CI: true
+  CI: "true"
 
 jobs:
   verify:
     name: Quality, tests, and production build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Use project Node.js version
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -33,20 +35,46 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Use locked voice-check Python version
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12.13"
+
+      - name: Report runtime versions
+        run: |
+          node --version
+          npm --version
+          python --version
+          test "$(node --version)" = "v24.18.1"
+          test "$(npm --version)" = "11.16.0"
+          test "$(python --version)" = "Python 3.12.13"
+
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund --prefer-offline
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install voice-pack and browser test runtimes
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          npm run test:e2e:install -- --with-deps
+          ffmpeg -version
 
       - name: Run quality gates and verify production output
         run: npm run check
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Run browser regression tests
         run: npm run test:e2e
 
-      - name: Audit production dependencies
-        run: npm run audit:prod
+      - name: Audit complete dependency graph
+        run: npm run audit:all
 
       - name: Upload production artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -57,10 +85,11 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      - name: Upload coverage report
+      - name: Upload browser failure evidence
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-${{ github.sha }}
-          path: coverage
-          if-no-files-found: error
+          name: browser-failure-${{ github.sha }}
+          path: test-results
+          if-no-files-found: ignore
           retention-days: 7

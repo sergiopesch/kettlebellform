@@ -108,6 +108,8 @@ export default function App() {
   const requestingCamera = coach.mode === "requesting";
   const paused = coach.mode === "paused";
   const demo = coach.source === "demo";
+  const liveGuidanceEvidenceValid =
+    coach.source !== "camera" || coach.livePoseState === "tracked";
   const framingCue = useMemo(
     () => getFramingCue(coach.analysis?.landmarks, {
       mirrored: coach.cameraOptics?.mirrored ?? false,
@@ -124,6 +126,8 @@ export default function App() {
   const voiceCoach = useSpokenFramingCoach({
     cue: framingCue,
     sessionActive: coach.source !== null,
+    guidanceEvidenceValid: liveGuidanceEvidenceValid,
+    guidanceEvidenceEpoch: coach.liveGuidanceEpoch,
     motionActive:
       coach.source === "camera" &&
       coach.analysis !== null &&
@@ -131,6 +135,7 @@ export default function App() {
     automatic:
       coach.source === "camera" &&
       coach.mode === "live" &&
+      liveGuidanceEvidenceValid &&
       !coach.isCalibrating
   });
   const disableVoiceCoach = voiceCoach.disable;
@@ -352,6 +357,9 @@ function ReadyWorkspace({
                 <small>Environment-facing when supported</small>
               </span>
               <em>Recommended</em>
+              {cameraFacingMode === "environment" ? (
+                <Check className="selection-check" aria-hidden="true" />
+              ) : null}
             </button>
             <button
               type="button"
@@ -363,6 +371,9 @@ function ReadyWorkspace({
                 <strong>Selfie view</strong>
                 <small>Keep the screen facing you</small>
               </span>
+              {cameraFacingMode === "user" ? (
+                <Check className="selection-check" aria-hidden="true" />
+              ) : null}
             </button>
           </fieldset>
 
@@ -392,9 +403,9 @@ function ReadyWorkspace({
         <div className="privacy-line">
           <LockKeyhole aria-hidden="true" />
           <span>
-            Pose video stays in this browser. If voice is on, the browser sends only an
-            allowlisted cue ID to our server; OpenAI receives its matching fixed phrase. Never
-            microphone audio, camera frames, or landmarks.
+            Pose video stays in this browser. If voice is on, the browser downloads fixed coach
+            audio from this site. It never uploads microphone audio, camera frames, clips, or
+            landmarks.
           </span>
         </div>
 
@@ -871,7 +882,7 @@ function SettingsDrawer({
         <section className="settings-section">
           <span className="eyebrow">Upright reference</span>
           <strong>{calibration ? `${calibration.sampleCount} accepted samples` : "Using conservative defaults"}</strong>
-          <p>{calibration ? "Your reference is used only in this browser session." : "Set a standing reference once the live camera is running."}</p>
+          <p>{calibration ? "Your reference is used only while this camera subject remains continuously verified." : "Set a standing reference once the live camera is running."}</p>
           {calibration ? (
             <button className="button button-secondary" type="button" onClick={resetCalibration}>
               <RotateCcw aria-hidden="true" />
@@ -882,13 +893,12 @@ function SettingsDrawer({
 
         <section className="settings-section">
           <span className="eyebrow">Voice framing</span>
-          <strong>Two AI command profiles · no microphone</strong>
+          <strong>Two original Maritime Command voices · no microphone</strong>
           <p>
-            After you opt in, the browser sends only an allowlisted cue ID to our server and
-            OpenAI Realtime receives its matching positioning phrase. Camera frames, landmarks,
-            and microphone audio are never sent. If Realtime fails, KB FORM uses a local English
-            device voice when available, then falls back to visual cues. Availability and
-            OS/browser privacy behaviour vary.
+            After you opt in, KB FORM loads a small, versioned pack of fixed AI-generated phrases
+            from this site. That branded path sends no cues to a runtime synthesis provider. If it
+            fails, KB FORM uses a browser-reported local English voice when available, then visual
+            cues. Local voice availability and OS/browser privacy behaviour vary.
           </p>
         </section>
 
@@ -909,15 +919,17 @@ function VoiceCoachToggle({
   compact: boolean;
 }) {
   const activeProfile = getCoachVoiceProfile(voiceCoach.selectedProfile);
-  const connecting = voiceCoach.transport === "connecting";
-  const detail = connecting
-    ? "Connecting securely to OpenAI Realtime…"
+  const loading = voiceCoach.transport === "loading";
+  const usingDeviceFallback =
+    voiceCoach.enabled && voiceCoach.transport === "device";
+  const detail = loading
+    ? "Loading the verified Maritime Command voice pack…"
     : voiceCoach.availability === "loading"
-      ? "Finding a compatible voice…"
+      ? "Finding a compatible local fallback…"
     : voiceCoach.availability === "unavailable"
       ? "Voice unavailable · visual cues stay active"
-      : voiceCoach.enabled && voiceCoach.transport === "realtime"
-        ? `On · ${activeProfile.label} · OpenAI Realtime`
+      : voiceCoach.enabled && voiceCoach.transport === "pack"
+        ? `On · ${activeProfile.label} · verified voice pack`
         : voiceCoach.enabled && voiceCoach.transport === "device"
           ? "On · local device fallback · voice/privacy may vary"
           : "Off · no microphone access";
@@ -934,7 +946,7 @@ function VoiceCoachToggle({
           <select
             aria-label="Coach voice"
             value={voiceCoach.selectedProfile}
-            disabled={connecting}
+            disabled={loading || usingDeviceFallback}
             onChange={(event) => chooseProfile(event.target.value as VoiceProfileId)}
           >
             {COACH_VOICE_PROFILES.map((profile) => (
@@ -951,13 +963,16 @@ function VoiceCoachToggle({
               type="button"
               aria-label={profile.accessibleLabel}
               aria-pressed={voiceCoach.selectedProfile === profile.id}
-              disabled={connecting}
+              disabled={loading || usingDeviceFallback}
               onClick={() => chooseProfile(profile.id)}
             >
               <span>
                 <strong>{profile.label}</strong>
                 <small>{profile.description}</small>
               </span>
+              {voiceCoach.selectedProfile === profile.id ? (
+                <Check className="selection-check" aria-hidden="true" />
+              ) : null}
             </button>
           ))}
         </fieldset>
@@ -967,20 +982,22 @@ function VoiceCoachToggle({
         className={`voice-coach-toggle${compact ? " is-compact" : ""}`}
         type="button"
         aria-pressed={voiceCoach.enabled}
-        aria-busy={connecting}
+        aria-busy={loading}
         disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}
         onClick={voiceCoach.toggle}
       >
         {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
         <span>
-          <strong>{connecting ? "Connecting voice coach" : "Voice framing coach"}</strong>
+          <strong>{loading ? "Preparing voice coach" : "Voice framing coach"}</strong>
           <small>{detail}</small>
         </span>
       </button>
 
       {!compact ? (
         <p className="voice-ai-disclosure">
-          AI-generated speech, not a human coach recording. Only fixed framing text is sent when on.
+          Original AI-generated character voices, not human coach recordings and not affiliated
+          with any military unit. The branded profiles play only fixed, same-origin audio; any
+          device fallback is labelled separately.
         </p>
       ) : null}
     </div>
