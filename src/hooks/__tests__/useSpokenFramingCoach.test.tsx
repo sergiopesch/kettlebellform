@@ -320,7 +320,84 @@ describe("useSpokenFramingCoach", () => {
     expect(result.current.transport).toBe("device");
     expect(result.current.speechStatus).toMatch(/browser-reported local English voice/i);
     expect(result.current.speechStatus).not.toMatch(/private/i);
-    expect(client.deactivate).toHaveBeenCalled();
+    expect(client.close).toHaveBeenCalledOnce();
+    expect(client.deactivate).not.toHaveBeenCalled();
+
+    act(() => result.current.toggle());
+    act(() => result.current.toggle());
+    expect(packFactory.create).toHaveBeenCalledOnce();
+    expect(client.activate).toHaveBeenCalledOnce();
+    expect(result.current.transport).toBe("device");
+  });
+
+  it("circuit-breaks a timed-out pack for the page even while close is pending", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const closing = deferred<void>();
+    const failedClient = packClient();
+    failedClient.activate.mockRejectedValue(new Error("Voice pack activation timed out."));
+    failedClient.close.mockReturnValue(closing.promise);
+    packFactory.create.mockReturnValue(failedClient);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({
+        cue: FRAMING_CUES.finding,
+        automatic: false,
+        sessionActive: true
+      })
+    );
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+
+    expect(result.current.enabled).toBe(false);
+    expect(result.current.transport).toBe("visual");
+    expect(result.current.availability).toBe("unavailable");
+    expect(failedClient.close).toHaveBeenCalledOnce();
+    expect(packFactory.create).toHaveBeenCalledOnce();
+
+    advance(60_000);
+    await act(async () => Promise.resolve());
+    expect(failedClient.activate).toHaveBeenCalledOnce();
+    expect(packFactory.create).toHaveBeenCalledOnce();
+
+    act(() => result.current.toggle());
+    await act(async () => Promise.resolve());
+    expect(packFactory.create).toHaveBeenCalledOnce();
+    expect(failedClient.activate).toHaveBeenCalledOnce();
+    expect(result.current.transport).toBe("visual");
+
+    await act(async () => {
+      closing.reject(new Error("close failed"));
+      await Promise.resolve();
+    });
+    expect(packFactory.create).toHaveBeenCalledOnce();
+    expect(result.current.transport).toBe("visual");
+  });
+
+  it("does not retire a client when an older activation fails after a newer one wins", async () => {
+    packFactory.supports.mockReturnValue(true);
+    const female = deferred<void>();
+    const client = packClient();
+    client.activate.mockImplementation((profile) =>
+      profile === "female-command" ? female.promise : Promise.resolve()
+    );
+    packFactory.create.mockReturnValue(client);
+    const { result } = renderHook(() =>
+      useSpokenFramingCoach({ cue: FRAMING_CUES.finding, automatic: false })
+    );
+
+    act(() => result.current.toggle());
+    act(() => result.current.selectProfile("male-command"));
+    await act(async () => Promise.resolve());
+    expect(result.current.transport).toBe("pack");
+    expect(result.current.selectedProfile).toBe("male-command");
+
+    await act(async () => {
+      female.reject(new Error("stale activation failed"));
+      await female.promise.catch(() => undefined);
+    });
+    expect(client.close).not.toHaveBeenCalled();
+    expect(result.current.transport).toBe("pack");
+    expect(result.current.selectedProfile).toBe("male-command");
   });
 
   it("does not pretend that device fallback follows branded profile switches", () => {
@@ -353,6 +430,7 @@ describe("useSpokenFramingCoach", () => {
     expect(result.current.enabled).toBe(false);
     expect(result.current.transport).toBe("visual");
     expect(result.current.speechStatus).toMatch(/visual framing cues remain active/i);
+    expect(client.close).toHaveBeenCalledOnce();
   });
 
   it("uses only a local English fallback and debounces repeated corrections", () => {

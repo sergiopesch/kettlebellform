@@ -5,6 +5,81 @@ type SpeechProbeWindow = Window &
     __KB_FORM_E2E_SPOKEN__: string[];
   };
 
+type FirefoxAudioProbeWindow = Window &
+  typeof globalThis & {
+    __KB_FORM_E2E_RELEASE_AUDIO__: () => void;
+  };
+
+async function installFirefoxAudioContextStub(page: Page) {
+  await page.addInitScript(() => {
+    let releaseAudio!: () => void;
+    const audioRelease = new Promise<void>((resolve) => {
+      releaseAudio = resolve;
+    });
+
+    class E2EAudioContext {
+      state: AudioContextState = "suspended";
+      currentTime = 0;
+      destination = {} as AudioDestinationNode;
+
+      async resume() {
+        this.state = "running";
+      }
+
+      async suspend() {
+        this.state = "suspended";
+      }
+
+      async close() {
+        this.state = "closed";
+      }
+
+      async decodeAudioData() {
+        await audioRelease;
+        return { duration: 1 } as AudioBuffer;
+      }
+
+      createBufferSource() {
+        const source = {
+          buffer: null as AudioBuffer | null,
+          onended: null as (() => void) | null,
+          connect() {},
+          disconnect() {},
+          start() {
+            queueMicrotask(() => source.onended?.());
+          },
+          stop() {
+            queueMicrotask(() => source.onended?.());
+          }
+        };
+        return source as unknown as AudioBufferSourceNode;
+      }
+
+      createGain() {
+        return {
+          gain: {
+            value: 1,
+            cancelScheduledValues() {},
+            setValueAtTime() {},
+            linearRampToValueAtTime() {}
+          },
+          connect() {},
+          disconnect() {}
+        } as unknown as GainNode;
+      }
+    }
+
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: E2EAudioContext
+    });
+    Object.defineProperty(window, "__KB_FORM_E2E_RELEASE_AUDIO__", {
+      configurable: false,
+      value: releaseAudio
+    });
+  });
+}
+
 async function expectNoHorizontalOverflow(page: Page) {
   const dimensions = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
@@ -124,10 +199,18 @@ test("voice profiles and disclosure remain usable at desktop and mobile widths",
 });
 
 test("the verified voice pack loads only after opt-in and never calls a speech provider", async ({
-  page
+  page,
+  browserName
 }) => {
   const voiceAssets: Request[] = [];
   const forbiddenRequests: string[] = [];
+  const failedRequests: Request[] = [];
+  const pageErrors: Error[] = [];
+  if (browserName === "firefox") {
+    await installFirefoxAudioContextStub(page);
+  }
+  page.on("pageerror", (error) => pageErrors.push(error));
+  page.on("requestfailed", (request) => failedRequests.push(request));
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (/\.mp3(?:\?|$)/.test(url.pathname)) {
@@ -159,6 +242,14 @@ test("the verified voice pack loads only after opt-in and never calls a speech p
 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  if (browserName === "firefox") {
+    await expect(toggle).toHaveAttribute("aria-busy", "true");
+    await expect(toggle).toContainText("Preparing voice coach");
+    await page.evaluate(() =>
+      (window as FirefoxAudioProbeWindow).__KB_FORM_E2E_RELEASE_AUDIO__()
+    );
+  }
+  await expect(toggle).toHaveAttribute("aria-busy", "false");
   await expect(toggle).toContainText("verified voice pack");
   await expect.poll(() => voiceAssets.length).toBe(11);
   expect(new Set(voiceAssets.map((request) => request.url())).size).toBe(11);
@@ -169,6 +260,8 @@ test("the verified voice pack loads only after opt-in and never calls a speech p
   await expect.poll(() => voiceAssets.length).toBe(22);
   expect(new Set(voiceAssets.map((request) => request.url())).size).toBe(22);
   expect(forbiddenRequests).toEqual([]);
+  expect(failedRequests).toEqual([]);
+  expect(pageErrors).toEqual([]);
 });
 
 test("a failed branded asset degrades to the disclosed local fallback", async ({ page }) => {

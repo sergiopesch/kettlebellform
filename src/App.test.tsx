@@ -32,6 +32,11 @@ const controller = vi.hoisted(() => ({
   }
 }));
 
+const voicePack = vi.hoisted(() => ({
+  create: vi.fn(),
+  supports: vi.fn()
+}));
+
 vi.mock("./hooks/usePoseCoach", () => ({
   usePoseCoach: () => ({
     attachVideo: vi.fn(),
@@ -49,11 +54,18 @@ vi.mock("./hooks/usePoseCoach", () => ({
   })
 }));
 
+vi.mock("./lib/coachVoicePackClient", () => ({
+  createCoachVoicePackClient: voicePack.create,
+  supportsCoachVoicePack: voicePack.supports
+}));
+
 import App from "./App";
 
 describe("KB FORM setup experience", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    voicePack.create.mockReset();
+    voicePack.supports.mockReset().mockReturnValue(false);
     controller.clipBusy = false;
     controller.liveGuidanceEpoch = 0;
     controller.livePoseState = "tracked";
@@ -197,6 +209,45 @@ describe("KB FORM setup experience", () => {
     expect((speak.mock.calls[0][0] as Utterance).voice).toBe(localVoice);
     expect(screen.queryByText(/no microphone or audio recording/i)).not.toBeInTheDocument();
     expect(screen.getByText(/local device fallback.*privacy may vary/i)).toBeInTheDocument();
+  });
+
+  it("keeps the voice toggle name stable while announcing branded-pack loading", async () => {
+    const user = userEvent.setup();
+    let finishActivation!: () => void;
+    const activation = new Promise<void>((resolve) => {
+      finishActivation = resolve;
+    });
+    const client = {
+      activate: vi.fn(() => activation),
+      speak: vi.fn().mockReturnValue(true),
+      cancel: vi.fn(),
+      deactivate: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined)
+    };
+    voicePack.supports.mockReturnValue(true);
+    voicePack.create.mockReturnValue(client);
+
+    render(<App />);
+    const toggle = screen.getByRole("button", {
+      name: "Voice framing coach"
+    });
+
+    expect(toggle).toHaveAttribute("aria-busy", "false");
+    await user.click(toggle);
+
+    expect(screen.getByRole("button", {
+      name: "Voice framing coach"
+    })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(toggle).toHaveAttribute("aria-busy", "true");
+    expect(toggle).toHaveTextContent("Preparing voice coach");
+    const loadingStatus = screen.getByText("Loading the British Maritime Command voice…");
+    expect(loadingStatus).toBeVisible();
+    expect(loadingStatus).toHaveAttribute("role", "status");
+
+    finishActivation();
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-busy", "false"));
+    expect(toggle).toHaveTextContent("verified voice pack");
   });
 
   it("lets the user choose either AI command profile before enabling speech", async () => {

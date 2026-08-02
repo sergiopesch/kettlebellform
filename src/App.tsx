@@ -981,6 +981,7 @@ function VoiceCoachToggle({
       <button
         className={`voice-coach-toggle${compact ? " is-compact" : ""}`}
         type="button"
+        aria-label="Voice framing coach"
         aria-pressed={voiceCoach.enabled}
         aria-busy={loading}
         disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}

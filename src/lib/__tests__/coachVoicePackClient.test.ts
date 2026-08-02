@@ -13,6 +13,22 @@ type SourceStub = {
   onended: (() => void) | null;
 };
 
+type Deferred<T> = Readonly<{
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+}>;
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function audioHarness() {
   const sources: SourceStub[] = [];
   const gains: Array<{
@@ -179,10 +195,59 @@ function clientHarness(
 }
 
 describe("coach voice pack client", () => {
-  it("does not allow callers to weaken the fixed asset-load deadline", () => {
+  it("does not allow callers to weaken fixed runtime deadlines", () => {
     expect(() => clientHarness({ assetLoadTimeoutMs: 15_001 })).toThrow(
       /timeout is invalid/i
     );
+    expect(() => clientHarness({ activationTimeoutMs: 15_001 })).toThrow(
+      /activation timeout is invalid/i
+    );
+    expect(() => clientHarness({ activationTimeoutMs: 0 })).toThrow(
+      /activation timeout is invalid/i
+    );
+  });
+
+  it("invokes resume synchronously but waits for it before loading the pack", async () => {
+    const resumeGate = deferred<void>();
+    const harness = clientHarness();
+    vi.mocked(harness.audio.context.resume).mockReturnValueOnce(resumeGate.promise);
+
+    const activation = harness.client.activate("male-command");
+
+    expect(harness.audio.context.resume).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    expect(harness.fetchImpl).not.toHaveBeenCalled();
+    expect(harness.digestSha256).not.toHaveBeenCalled();
+    expect(harness.audio.context.decodeAudioData).not.toHaveBeenCalled();
+
+    resumeGate.resolve(undefined);
+    await activation;
+
+    expect(harness.fetchImpl).toHaveBeenCalledTimes(11);
+    expect(harness.audio.context.decodeAudioData).toHaveBeenCalledTimes(11);
+  });
+
+  it("times out a resume that never settles and circuit-breaks its context", async () => {
+    const resumeGate = deferred<void>();
+    const harness = clientHarness({ activationTimeoutMs: 30 });
+    vi.mocked(harness.audio.context.resume).mockReturnValueOnce(resumeGate.promise);
+
+    const activation = harness.client.activate("male-command");
+    const rejection = expect(activation).rejects.toThrow(
+      /activation timed out after 30 ms/i
+    );
+
+    expect(harness.audio.context.resume).toHaveBeenCalledOnce();
+    await rejection;
+    expect(harness.fetchImpl).not.toHaveBeenCalled();
+    expect(harness.audio.context.close).toHaveBeenCalledOnce();
+    expect(harness.client.speak(coachVoiceMessage("ready"))).toBe(false);
+    await expect(harness.client.activate("male-command")).rejects.toThrow(
+      /unavailable after an activation failure/i
+    );
+
+    await harness.client.close();
+    expect(harness.audio.context.close).toHaveBeenCalledOnce();
   });
 
   it("does no work before opt-in, then resumes and preloads the selected pack", async () => {
@@ -256,6 +321,98 @@ describe("coach voice pack client", () => {
     );
   });
 
+  it("allows at most one underlying Web Audio decode at a time", async () => {
+    const harness = clientHarness();
+    let activeDecodes = 0;
+    let maximumActiveDecodes = 0;
+    vi.mocked(harness.audio.context.decodeAudioData).mockImplementation(async () => {
+      activeDecodes += 1;
+      maximumActiveDecodes = Math.max(maximumActiveDecodes, activeDecodes);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return { duration: 1 } as AudioBuffer;
+      } finally {
+        activeDecodes -= 1;
+      }
+    });
+
+    await harness.client.activate("male-command");
+
+    expect(harness.audio.context.decodeAudioData).toHaveBeenCalledTimes(11);
+    expect(maximumActiveDecodes).toBe(1);
+  });
+
+  it("retains decode ownership across cancellation and rejects stale buffer writes", async () => {
+    const harness = clientHarness();
+    const firstDecode = deferred<AudioBuffer>();
+    let decodeCalls = 0;
+    let activeDecodes = 0;
+    let maximumActiveDecodes = 0;
+    vi.mocked(harness.audio.context.decodeAudioData).mockImplementation(() => {
+      decodeCalls += 1;
+      activeDecodes += 1;
+      maximumActiveDecodes = Math.max(maximumActiveDecodes, activeDecodes);
+      const operation =
+        decodeCalls === 1
+          ? firstDecode.promise
+          : Promise.resolve({ duration: 1 } as AudioBuffer);
+      return operation.finally(() => {
+        activeDecodes -= 1;
+      });
+    });
+
+    const firstActivation = harness.client.activate("male-command");
+    await vi.waitFor(() =>
+      expect(harness.audio.context.decodeAudioData).toHaveBeenCalledOnce()
+    );
+    harness.client.cancel();
+    await expect(firstActivation).rejects.toMatchObject({ name: "AbortError" });
+
+    const secondActivation = harness.client.activate("female-command");
+    await vi.waitFor(() => expect(harness.fetchImpl).toHaveBeenCalledTimes(22));
+    expect(harness.audio.context.decodeAudioData).toHaveBeenCalledOnce();
+
+    firstDecode.resolve({ duration: 1 } as AudioBuffer);
+    await secondActivation;
+    expect(maximumActiveDecodes).toBe(1);
+    expect(harness.client.speak(coachVoiceMessage("female-command-selected"))).toBe(
+      true
+    );
+
+    // The decoded result from the canceled male activation must not enter the
+    // cache; a later male activation still verifies and loads all 11 assets.
+    await harness.client.activate("male-command");
+    expect(harness.fetchImpl).toHaveBeenCalledTimes(33);
+    expect(maximumActiveDecodes).toBe(1);
+  });
+
+  it("times out a decoder that never settles without releasing its ownership", async () => {
+    const decodeGate = deferred<AudioBuffer>();
+    const harness = clientHarness({ activationTimeoutMs: 100 });
+    vi.mocked(harness.audio.context.decodeAudioData).mockReturnValueOnce(
+      decodeGate.promise
+    );
+
+    const activation = harness.client.activate("female-command");
+    const rejection = expect(activation).rejects.toThrow(
+      /activation timed out after 100 ms/i
+    );
+    await vi.waitFor(() =>
+      expect(harness.audio.context.decodeAudioData).toHaveBeenCalledOnce()
+    );
+    await rejection;
+
+    expect(harness.audio.context.close).toHaveBeenCalledOnce();
+    expect(harness.client.speak(coachVoiceMessage("ready"))).toBe(false);
+    decodeGate.resolve({ duration: 1 } as AudioBuffer);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.audio.context.decodeAudioData).toHaveBeenCalledOnce();
+    await expect(harness.client.activate("female-command")).rejects.toThrow(
+      /unavailable after an activation failure/i
+    );
+  });
+
   it("plays only allowlisted messages and replaces owned audio cleanly", async () => {
     const { client, audio } = clientHarness();
     await client.activate("male-command");
@@ -285,7 +442,9 @@ describe("coach voice pack client", () => {
 
     await expect(first).rejects.toMatchObject({ name: "AbortError" });
     await second;
-    expect(fetchImpl).toHaveBeenCalledTimes(22);
+    // The superseded activation never starts loading because its resume did
+    // not win the activation race.
+    expect(fetchImpl).toHaveBeenCalledTimes(11);
     expect(client.speak(coachVoiceMessage("female-command-selected"))).toBe(true);
   });
 
@@ -520,7 +679,7 @@ describe("coach voice pack client", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch
     });
     const activation = abortHarness.client.activate("male-command");
-    await Promise.resolve();
+    await vi.waitFor(() => expect(requestSignals).toHaveLength(11));
     abortHarness.client.cancel();
     await expect(activation).rejects.toMatchObject({ name: "AbortError" });
     expect(requestSignals).toHaveLength(11);

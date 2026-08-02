@@ -28,6 +28,7 @@ type CoachVoicePackClientOptions = Readonly<{
   digestSha256?: (contents: ArrayBuffer) => Promise<string>;
   baseUrl?: string;
   assetLoadTimeoutMs?: number;
+  activationTimeoutMs?: number;
 }>;
 
 const MESSAGE_IDS = Object.freeze(
@@ -36,6 +37,8 @@ const MESSAGE_IDS = Object.freeze(
 const CANCEL_FADE_SECONDS = 0.02;
 const CANCEL_SETTLE_MS = 30;
 const ASSET_LOAD_TIMEOUT_MS = 15_000;
+const ACTIVATION_TIMEOUT_MS = 8_000;
+const MAX_ACTIVATION_TIMEOUT_MS = 15_000;
 
 function getAudioContextConstructor(): AudioContextConstructor | undefined {
   if (typeof window === "undefined") {
@@ -81,6 +84,10 @@ function canceledActivation() {
 
 function assetLoadTimeout(timeoutMs: number) {
   return new Error(`A branded voice asset timed out after ${timeoutMs} ms.`);
+}
+
+function activationTimeout(timeoutMs: number) {
+  return new Error(`Branded voice activation timed out after ${timeoutMs} ms.`);
 }
 
 function abortReason(signal: AbortSignal, fallback: Error) {
@@ -143,6 +150,7 @@ export function createCoachVoicePackClient(
   const digestSha256 = options.digestSha256 ?? defaultDigestSha256;
   const baseUrl = options.baseUrl ?? globalThis.location?.href ?? "http://localhost/";
   const assetLoadTimeoutMs = options.assetLoadTimeoutMs ?? ASSET_LOAD_TIMEOUT_MS;
+  const activationTimeoutMs = options.activationTimeoutMs ?? ACTIVATION_TIMEOUT_MS;
   if (
     !Number.isSafeInteger(assetLoadTimeoutMs) ||
     assetLoadTimeoutMs <= 0 ||
@@ -150,12 +158,22 @@ export function createCoachVoicePackClient(
   ) {
     throw new Error("The branded voice asset timeout is invalid.");
   }
+  if (
+    !Number.isSafeInteger(activationTimeoutMs) ||
+    activationTimeoutMs <= 0 ||
+    activationTimeoutMs > MAX_ACTIVATION_TIMEOUT_MS
+  ) {
+    throw new Error("The branded voice activation timeout is invalid.");
+  }
   const buffers = new Map<string, AudioBuffer>();
   let context: AudioContext | null = null;
+  let contextClosePromise: Promise<void> | null = null;
+  let decodeTail: Promise<void> = Promise.resolve();
   let activeSource: AudioBufferSourceNode | null = null;
   let activeGain: GainNode | null = null;
   let activationAbort: AbortController | null = null;
   let selectedProfile: VoiceProfileId | null = null;
+  let circuitFailure: Error | null = null;
   let generation = 0;
   let closed = false;
 
@@ -178,8 +196,26 @@ export function createCoachVoicePackClient(
 
   const throwIfAborted = (signal: AbortSignal) => {
     if (signal.aborted) {
-      throw canceledActivation();
+      throw abortReason(signal, canceledActivation());
     }
+  };
+
+  const closeOwnedContext = () => {
+    const ownedContext = context;
+    context = null;
+    if (!ownedContext || ownedContext.state === "closed") {
+      return contextClosePromise ?? Promise.resolve();
+    }
+    let closeAttempt: Promise<void>;
+    try {
+      closeAttempt = ownedContext.close().catch(() => undefined);
+    } catch {
+      closeAttempt = Promise.resolve();
+    }
+    contextClosePromise = contextClosePromise
+      ? Promise.all([contextClosePromise, closeAttempt]).then(() => undefined)
+      : closeAttempt;
+    return contextClosePromise;
   };
 
   const fetchAssetContents = async (
@@ -188,7 +224,8 @@ export function createCoachVoicePackClient(
     activationSignal: AbortSignal
   ) => {
     const requestController = new AbortController();
-    const onActivationAbort = () => requestController.abort(canceledActivation());
+    const onActivationAbort = () =>
+      requestController.abort(abortReason(activationSignal, canceledActivation()));
     activationSignal.addEventListener("abort", onActivationAbort, { once: true });
     if (activationSignal.aborted) {
       onActivationAbort();
@@ -258,7 +295,7 @@ export function createCoachVoicePackClient(
       return contents.buffer;
     } catch (error) {
       const failure = activationSignal.aborted
-        ? canceledActivation()
+        ? abortReason(activationSignal, canceledActivation())
         : requestController.signal.aborted
           ? abortReason(requestController.signal, timeoutError)
           : error;
@@ -292,16 +329,34 @@ export function createCoachVoicePackClient(
     throwIfAborted(signal);
     const url = ensureSameOriginUrl(asset);
     const contents = await fetchAssetContents(asset, url, signal);
-    const receivedHash = await digestSha256(contents.slice(0));
+    const receivedHash = await waitWithSignal(
+      digestSha256(contents.slice(0)),
+      signal
+    );
     throwIfAborted(signal);
     if (receivedHash !== asset.sha256) {
       throw new Error("A branded voice asset failed its integrity check.");
     }
-    if (!context || closed) {
+    const ownedContext = context;
+    if (!ownedContext || closed || circuitFailure) {
       throw canceledActivation();
     }
-    const decoded = await context.decodeAudioData(contents.slice(0));
+    const scheduledDecode = decodeTail.then(async () => {
+      throwIfAborted(signal);
+      return await ownedContext.decodeAudioData(contents.slice(0));
+    });
+    // A logical cancellation may reject the caller immediately, but this tail
+    // retains exclusive decode ownership until the browser operation itself
+    // settles. A retry therefore cannot overlap a still-running decoder.
+    decodeTail = scheduledDecode.then(
+      () => undefined,
+      () => undefined
+    );
+    const decoded = await waitWithSignal(scheduledDecode, signal);
     throwIfAborted(signal);
+    if (context !== ownedContext || closed || circuitFailure) {
+      throw canceledActivation();
+    }
     buffers.set(key, decoded);
     return decoded;
   };
@@ -348,7 +403,7 @@ export function createCoachVoicePackClient(
 
   const cancelInternal = () => {
     generation += 1;
-    activationAbort?.abort();
+    activationAbort?.abort(canceledActivation());
     activationAbort = null;
     return stopActiveSource();
   };
@@ -361,29 +416,63 @@ export function createCoachVoicePackClient(
     if (closed) {
       throw new Error("Voice pack client is closed.");
     }
+    if (circuitFailure) {
+      throw new Error("Voice pack client is unavailable after an activation failure.", {
+        cause: circuitFailure
+      });
+    }
     cancel();
     const activationGeneration = generation;
     const controller = new AbortController();
     activationAbort = controller;
     selectedProfile = null;
-    context ??= createAudioContext();
-
-    // Resume synchronously from the opt-in handler before the first await so
-    // Safari retains the user's transient audio activation.
-    const resume = context.state === "running" ? Promise.resolve() : context.resume();
-    const preload = Promise.all(
-      MESSAGE_IDS.map((cueId) => loadBuffer(profile, cueId, controller.signal))
+    const timeoutError = activationTimeout(activationTimeoutMs);
+    const timeoutHandle = setTimeout(
+      () => controller.abort(timeoutError),
+      activationTimeoutMs
     );
     try {
-      await Promise.all([resume, preload]);
+      context ??= createAudioContext();
+      // Resume synchronously from the opt-in handler before the first await so
+      // Safari retains the user's transient audio activation.
+      const resume =
+        context.state === "running" ? Promise.resolve() : context.resume();
+      // Do not start network, integrity, or decode work until Web Audio has
+      // actually resumed. This keeps a failed audio sink from wasting the pack.
+      await waitWithSignal(resume, controller.signal);
+      throwIfAborted(controller.signal);
+      await waitWithSignal(
+        Promise.all(
+          MESSAGE_IDS.map((cueId) =>
+            loadBuffer(profile, cueId, controller.signal)
+          )
+        ),
+        controller.signal
+      );
       if (closed || generation !== activationGeneration || controller.signal.aborted) {
         throw canceledActivation();
       }
       selectedProfile = profile;
     } catch (error) {
-      controller.abort();
-      throw error;
+      const failure = controller.signal.aborted
+        ? abortReason(controller.signal, canceledActivation())
+        : error instanceof Error
+          ? error
+          : new Error("Branded voice activation failed.");
+      const superseded =
+        controller.signal.aborted && failure.name === "AbortError";
+      if (!controller.signal.aborted) {
+        controller.abort(failure);
+      }
+      if (!superseded) {
+        circuitFailure = failure;
+        selectedProfile = null;
+        buffers.clear();
+        void closeOwnedContext();
+      }
+      throw failure;
     } finally {
+      clearTimeout(timeoutHandle);
       if (activationAbort === controller) {
         activationAbort = null;
       }
@@ -393,6 +482,7 @@ export function createCoachVoicePackClient(
   const speak = (message: CoachVoiceMessage) => {
     if (
       closed ||
+      circuitFailure ||
       !context ||
       context.state !== "running" ||
       !selectedProfile ||
@@ -453,17 +543,14 @@ export function createCoachVoicePackClient(
 
   const close = async () => {
     if (closed) {
+      await contextClosePromise;
       return;
     }
     closed = true;
     selectedProfile = null;
     cancel();
     buffers.clear();
-    const ownedContext = context;
-    context = null;
-    if (ownedContext && ownedContext.state !== "closed") {
-      await ownedContext.close().catch(() => undefined);
-    }
+    await closeOwnedContext();
   };
 
   return Object.freeze({ activate, speak, cancel, deactivate, close });

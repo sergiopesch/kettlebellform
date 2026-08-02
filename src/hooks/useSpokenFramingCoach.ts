@@ -83,6 +83,7 @@ export function useSpokenFramingCoach({
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const packClientRef = useRef<CoachVoicePackClient | null>(null);
+  const packCircuitBrokenRef = useRef(false);
   const activationEpochRef = useRef(0);
   const enabledRef = useRef(false);
   const selectedProfileRef = useRef<VoiceProfileId>(DEFAULT_COACH_VOICE_PROFILE_ID);
@@ -171,10 +172,26 @@ export function useSpokenFramingCoach({
     [cancelLocalSpeech, speechSupported]
   );
 
+  const retireFailedPackClient = useCallback((client: CoachVoicePackClient) => {
+    if (packClientRef.current !== client) {
+      return false;
+    }
+    packCircuitBrokenRef.current = true;
+    packClientRef.current = null;
+    try {
+      void client.close().catch(() => undefined);
+    } catch {
+      // Closing is best-effort; fallback must still leave the loading state.
+    }
+    return true;
+  }, []);
+
   const fallBackFromPack = useCallback((message?: string) => {
     activationEpochRef.current += 1;
-    packClientRef.current?.cancel();
-    void packClientRef.current?.deactivate();
+    const failedClient = packClientRef.current;
+    if (failedClient) {
+      retireFailedPackClient(failedClient);
+    }
     if (!mountedRef.current || !enabledRef.current) {
       return;
     }
@@ -188,16 +205,22 @@ export function useSpokenFramingCoach({
     enabledRef.current = false;
     setEnabled(false);
     setTransport("visual");
+    setAvailability("unavailable");
     setSpeechStatus(
       message || "The branded AI voice is unavailable. Visual framing cues remain active."
     );
-  }, []);
+  }, [retireFailedPackClient]);
 
   const activatePack = useCallback(
     async (profile: VoiceProfileId, confirmationId?: CoachVoiceMessageId) => {
       cancelOwnedSpeech();
       const epoch = activationEpochRef.current;
-      if (!mountedRef.current || !enabledRef.current || !pageVisibleRef.current) {
+      if (
+        !mountedRef.current ||
+        !enabledRef.current ||
+        !pageVisibleRef.current ||
+        packCircuitBrokenRef.current
+      ) {
         return;
       }
       setTransport("loading");
@@ -244,13 +267,14 @@ export function useSpokenFramingCoach({
           mountedRef.current &&
           enabledRef.current &&
           packClientRef.current === client &&
-          activationEpochRef.current === epoch
+          activationEpochRef.current === epoch &&
+          retireFailedPackClient(client)
         ) {
           fallBackFromPack();
         }
       }
     },
-    [cancelOwnedSpeech, fallBackFromPack]
+    [cancelOwnedSpeech, fallBackFromPack, retireFailedPackClient]
   );
 
   const disableAfterDeviceError = useCallback(() => {
@@ -295,7 +319,7 @@ export function useSpokenFramingCoach({
       const voice = chooseLocalVoice(voices);
       const hadVoice = voiceRef.current !== null;
       voiceRef.current = voice;
-      if (packSupported || voice) {
+      if ((packSupported && !packCircuitBrokenRef.current) || voice) {
         setAvailability("ready");
         return;
       }
@@ -317,7 +341,10 @@ export function useSpokenFramingCoach({
     syncVoices();
     synthesis.addEventListener?.("voiceschanged", syncVoices);
     const discoveryTimeout = window.setTimeout(() => {
-      if (!voiceRef.current && !packSupported) {
+      if (
+        !voiceRef.current &&
+        (!packSupported || packCircuitBrokenRef.current)
+      ) {
         discoveryTimedOutRef.current = true;
         enabledRef.current = false;
         setEnabled(false);
@@ -386,7 +413,7 @@ export function useSpokenFramingCoach({
     if (!enabled || !pageVisible || !sessionActive || transport !== "off") {
       return;
     }
-    if (packSupported) {
+    if (packSupported && !packCircuitBrokenRef.current) {
       void activatePack(selectedProfileRef.current);
     } else if (voiceRef.current) {
       setTransport("device");
@@ -549,7 +576,7 @@ export function useSpokenFramingCoach({
     resetGuidanceState();
     enabledRef.current = true;
     setEnabled(true);
-    if (packSupported) {
+    if (packSupported && !packCircuitBrokenRef.current) {
       void activatePack(selectedProfileRef.current, "coach-on");
       return;
     }
@@ -607,7 +634,7 @@ export function useSpokenFramingCoach({
         profile === "male-command"
           ? "male-command-selected"
           : "female-command-selected";
-      if (packSupported) {
+      if (packSupported && !packCircuitBrokenRef.current) {
         void activatePack(profile, confirmationId);
       } else if (voiceRef.current) {
         setTransport("device");

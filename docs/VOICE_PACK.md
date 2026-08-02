@@ -237,15 +237,19 @@ The browser does not construct an asset URL from user input. `src/lib/coachVoice
 
 After opt-in, `src/lib/coachVoicePackClient.ts`:
 
-1. creates or resumes one owned `AudioContext` synchronously from the click;
+1. synchronously starts one owned `AudioContext` resume from the click and waits for it to succeed before any native decode;
 2. streams the selected profile's eleven Vite-hashed, same-origin URLs in parallel under a fixed 15-second per-asset deadline;
 3. limits each response to its exact manifest byte length and rejects declared or actual overflow, short bodies, and stalled streams;
 4. requires HTTP success, exact `audio/mpeg` MIME, and SHA-256 before decoding;
-5. caches decoded `AudioBuffer` objects for the page lifetime;
-6. plays only exact `CoachVoiceMessage` objects;
-7. owns one source at a time, fades an interrupted source before disconnecting it, and invalidates stale activation/playback generations;
-8. aborts and cancels unfinished asset requests and releases their readers when activation is superseded, disabled, hidden, timed out, failed, or ended;
-9. suspends the audio context while inactive and closes it on unmount.
+5. serializes `decodeAudioData()` and retains queue ownership until the underlying decode settles, so cancellation or a profile retry cannot create overlapping native decoder jobs;
+6. applies a non-weakenable eight-second whole-activation deadline to resume, fetch, digest, and decode, then permanently retires that client for the page and starts context closure before using the labelled fallback; no new branded `AudioContext` is created until reload, even if native close never settles;
+7. caches decoded `AudioBuffer` objects for the page lifetime;
+8. plays only exact `CoachVoiceMessage` objects;
+9. owns one source at a time, fades an interrupted source before disconnecting it, and invalidates stale activation/playback generations;
+10. aborts and cancels unfinished asset requests and releases their readers when activation is superseded, disabled, hidden, timed out, failed, or ended;
+11. suspends the audio context while inactive and closes it on unmount.
+
+The automated Chromium and WebKit projects exercise their native Web Audio decoders. Headless Firefox on the Linux CI runner has no reliable audio sink, so that project installs a deterministic in-page Web Audio shim while continuing to fetch, size-limit, hash, and state-test the real committed MP3s. Firefox hardware playback and cue timing therefore remain explicit target-device release checks rather than implied CI coverage.
 
 The production voice path contains no OpenAI or Hugging Face credential, request, WebRTC peer, WebSocket, microphone track, data channel, server function, free-form text surface, or arbitrary URL fetch.
 
