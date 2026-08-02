@@ -240,7 +240,8 @@ describe("KB FORM setup experience", () => {
     })).toBe(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(toggle).toHaveAttribute("aria-busy", "true");
-    expect(toggle).toHaveTextContent("Preparing voice coach");
+    expect(toggle).toHaveTextContent("Voice framing coach");
+    expect(toggle).toHaveTextContent("Loading the verified Maritime Command voice pack…");
     const loadingStatus = screen.getByText("Loading the British Maritime Command voice…");
     expect(loadingStatus).toBeVisible();
     expect(loadingStatus).toHaveAttribute("role", "status");

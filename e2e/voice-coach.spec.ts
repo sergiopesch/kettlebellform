@@ -244,7 +244,8 @@ test("the verified voice pack loads only after opt-in and never calls a speech p
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   if (browserName === "firefox") {
     await expect(toggle).toHaveAttribute("aria-busy", "true");
-    await expect(toggle).toContainText("Preparing voice coach");
+    await expect(toggle).toContainText("Voice framing coach");
+    await expect(toggle).toContainText("Loading the verified Maritime Command voice pack…");
     await page.evaluate(() =>
       (window as FirefoxAudioProbeWindow).__KB_FORM_E2E_RELEASE_AUDIO__()
     );

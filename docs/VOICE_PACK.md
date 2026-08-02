@@ -249,7 +249,7 @@ After opt-in, `src/lib/coachVoicePackClient.ts`:
 10. aborts and cancels unfinished asset requests and releases their readers when activation is superseded, disabled, hidden, timed out, failed, or ended;
 11. suspends the audio context while inactive and closes it on unmount.
 
-The automated Chromium and WebKit projects exercise their native Web Audio decoders. Headless Firefox on the Linux CI runner has no reliable audio sink, so that project installs a deterministic in-page Web Audio shim while continuing to fetch, size-limit, hash, and state-test the real committed MP3s. Firefox hardware playback and cue timing therefore remain explicit target-device release checks rather than implied CI coverage.
+The automated Chromium and WebKit projects exercise their native Web Audio decoders. The verified-pack scenario in headless Firefox on the Linux CI runner has no reliable audio sink, so that scenario installs a deterministic in-page Web Audio shim while continuing to fetch, size-limit, hash, and state-test the real committed MP3s; the other Firefox scenarios retain native browser APIs. Firefox hardware playback and cue timing therefore remain explicit target-device release checks rather than implied CI coverage.
 
 The production voice path contains no OpenAI or Hugging Face credential, request, WebRTC peer, WebSocket, microphone track, data channel, server function, free-form text surface, or arbitrary URL fetch.
 

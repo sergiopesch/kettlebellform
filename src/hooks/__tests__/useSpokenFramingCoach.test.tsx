@@ -268,7 +268,7 @@ describe("useSpokenFramingCoach", () => {
     expect(result.current.transport).toBe("pack");
   });
 
-  it("closes the one owned pack client only on unmount", async () => {
+  it("closes a healthy owned pack client on unmount", async () => {
     packFactory.supports.mockReturnValue(true);
     const client = packClient();
     packFactory.create.mockReturnValue(client);

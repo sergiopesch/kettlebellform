@@ -989,7 +989,7 @@ function VoiceCoachToggle({
       >
         {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
         <span>
-          <strong>{loading ? "Preparing voice coach" : "Voice framing coach"}</strong>
+          <strong>Voice framing coach</strong>
           <small>{detail}</small>
         </span>
       </button>
