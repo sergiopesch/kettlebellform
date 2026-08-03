@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FRAMING_CUES } from "../framingCoach";
 import {
+  COACH_VOICE_DISCLOSURE,
   COACH_VOICE_MESSAGES,
   COACH_VOICE_PROFILES,
   coachVoiceMessage,
@@ -18,15 +19,18 @@ describe("coach voice profiles", () => {
       "female-command"
     ]);
     expect(new Set(COACH_VOICE_PROFILES.map(({ characterName }) => characterName)).size).toBe(2);
+    expect(new Set(COACH_VOICE_PROFILES.map(({ descriptor }) => descriptor)).size).toBe(2);
 
     for (const profile of COACH_VOICE_PROFILES) {
-      expect(profile.label).toMatch(/British (male|female)/i);
-      expect(profile.label).toMatch(/Maritime Command/i);
+      expect(profile.descriptor).toMatch(/British (male|female)/i);
+      expect(profile.accessibleLabel).toContain(profile.characterName);
+      expect(profile.accessibleLabel).toMatch(/Maritime Command/i);
       expect(profile.accessibleLabel).toMatch(/AI-generated/i);
-      expect(profile.aiDisclosure).toMatch(/AI-generated/i);
-      expect(profile.aiDisclosure).toMatch(/not affiliated/i);
-      expect(profile.packId).toBe("maritime-command-v2");
     }
+
+    expect(COACH_VOICE_DISCLOSURE).toMatch(/AI-generated/i);
+    expect(COACH_VOICE_DISCLOSURE).toMatch(/not human recordings/i);
+    expect(COACH_VOICE_DISCLOSURE).toMatch(/no military affiliation/i);
   });
 
   it("resolves only the two fixed profile identifiers", () => {

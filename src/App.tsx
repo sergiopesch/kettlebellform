@@ -14,6 +14,7 @@ import {
   LockKeyhole,
   Pause,
   Play,
+  Power,
   RotateCcw,
   ScanLine,
   Settings,
@@ -28,6 +29,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { usePoseCoach, type CameraFacingMode } from "./hooks/usePoseCoach";
 import { useSpokenFramingCoach } from "./hooks/useSpokenFramingCoach";
 import {
+  COACH_VOICE_DISCLOSURE,
   COACH_VOICE_PROFILES,
   getCoachVoiceProfile,
   type VoiceProfileId
@@ -46,6 +48,8 @@ const PoseScene = lazy(() =>
 );
 
 const VideoClipWorkspace = lazy(() => import("./components/VideoClipWorkspace"));
+
+const VOICE_COACH_LABEL = "Voice framing coach";
 
 const defaultSettings: CoachSettings = {
   heightCm: 178,
@@ -923,20 +927,16 @@ function VoiceCoachToggle({
   const usingDeviceFallback =
     voiceCoach.enabled && voiceCoach.transport === "device";
   const detail = loading
-    ? "Loading the verified Maritime Command voice pack…"
+    ? `Preparing ${activeProfile.characterName}…`
     : voiceCoach.availability === "loading"
-      ? "Finding a compatible local fallback…"
-    : voiceCoach.availability === "unavailable"
-      ? "Voice unavailable · visual cues stay active"
-      : voiceCoach.enabled && voiceCoach.transport === "pack"
-        ? `On · ${activeProfile.label} · verified voice pack`
-        : voiceCoach.enabled && voiceCoach.transport === "device"
-          ? "On · local device fallback · voice/privacy may vary"
-          : "Off · no microphone access";
-
-  const chooseProfile = (profile: VoiceProfileId) => {
-    voiceCoach.selectProfile(profile);
-  };
+      ? "Checking audio…"
+      : voiceCoach.availability === "unavailable"
+        ? "Visual cues only"
+        : voiceCoach.enabled && voiceCoach.transport === "pack"
+          ? `${activeProfile.characterName} · verified pack`
+          : voiceCoach.enabled && voiceCoach.transport === "device"
+            ? "Device voice · privacy may vary"
+            : "Off · no microphone";
 
   return (
     <div className={`voice-coach-control${compact ? " is-compact" : ""}`}>
@@ -947,59 +947,83 @@ function VoiceCoachToggle({
             aria-label="Coach voice"
             value={voiceCoach.selectedProfile}
             disabled={loading || usingDeviceFallback}
-            onChange={(event) => chooseProfile(event.target.value as VoiceProfileId)}
+            onChange={(event) => voiceCoach.selectProfile(event.target.value as VoiceProfileId)}
           >
             {COACH_VOICE_PROFILES.map((profile) => (
-              <option key={profile.id} value={profile.id}>{profile.label}</option>
+              <option key={profile.id} value={profile.id}>
+                {profile.characterName} · {profile.descriptor}
+              </option>
             ))}
           </select>
         </label>
       ) : (
-        <fieldset className="voice-profile-picker">
-          <legend>Choose an AI coach voice</legend>
-          {COACH_VOICE_PROFILES.map((profile) => (
-            <button
-              key={profile.id}
-              type="button"
-              aria-label={profile.accessibleLabel}
-              aria-pressed={voiceCoach.selectedProfile === profile.id}
-              disabled={loading || usingDeviceFallback}
-              onClick={() => chooseProfile(profile.id)}
-            >
+        <div className="voice-coach-panel">
+          <div className="voice-coach-header">
+            <div className="voice-coach-identity">
+              {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
               <span>
-                <strong>{profile.label}</strong>
-                <small>{profile.description}</small>
+                <strong>{VOICE_COACH_LABEL}</strong>
+                <small>{detail}</small>
               </span>
-              {voiceCoach.selectedProfile === profile.id ? (
-                <Check className="selection-check" aria-hidden="true" />
-              ) : null}
+            </div>
+            <button
+              className="voice-coach-power"
+              type="button"
+              aria-label={VOICE_COACH_LABEL}
+              aria-pressed={voiceCoach.enabled}
+              aria-busy={loading}
+              disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}
+              onClick={voiceCoach.toggle}
+            >
+              <Power aria-hidden="true" />
             </button>
-          ))}
-        </fieldset>
+          </div>
+
+          <fieldset className="voice-profile-picker">
+            <legend className="visually-hidden">Choose a coach voice</legend>
+            {COACH_VOICE_PROFILES.map((profile) => (
+              <button
+                key={profile.id}
+                type="button"
+                aria-label={profile.accessibleLabel}
+                aria-pressed={voiceCoach.selectedProfile === profile.id}
+                disabled={loading || usingDeviceFallback}
+                onClick={() => voiceCoach.selectProfile(profile.id)}
+              >
+                <span>
+                  <strong>{profile.characterName}</strong>
+                  <small>{profile.descriptor}</small>
+                </span>
+                {voiceCoach.selectedProfile === profile.id ? (
+                  <Check className="selection-check" aria-hidden="true" />
+                ) : null}
+              </button>
+            ))}
+          </fieldset>
+
+          <p className="voice-ai-disclosure">{COACH_VOICE_DISCLOSURE}</p>
+        </div>
       )}
 
-      <button
-        className={`voice-coach-toggle${compact ? " is-compact" : ""}`}
-        type="button"
-        aria-label="Voice framing coach"
-        aria-pressed={voiceCoach.enabled}
-        aria-busy={loading}
-        disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}
-        onClick={voiceCoach.toggle}
-      >
-        {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
-        <span>
-          <strong>Voice framing coach</strong>
-          <small>{detail}</small>
-        </span>
-      </button>
-
-      {!compact ? (
-        <p className="voice-ai-disclosure">
-          Original AI-generated character voices, not human coach recordings and not affiliated
-          with any military unit. The branded profiles play only fixed, same-origin audio; any
-          device fallback is labelled separately.
-        </p>
+      {compact ? (
+        <>
+          <button
+            className="voice-coach-toggle is-compact"
+            type="button"
+            aria-label={VOICE_COACH_LABEL}
+            aria-pressed={voiceCoach.enabled}
+            aria-busy={loading}
+            disabled={voiceCoach.availability !== "ready" && !voiceCoach.enabled}
+            onClick={voiceCoach.toggle}
+          >
+            {voiceCoach.enabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
+            <span>
+              <strong>{VOICE_COACH_LABEL}</strong>
+              <small>{detail}</small>
+            </span>
+          </button>
+          <p className="voice-ai-disclosure is-compact">{COACH_VOICE_DISCLOSURE}</p>
+        </>
       ) : null}
     </div>
   );

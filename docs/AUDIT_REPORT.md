@@ -4,13 +4,13 @@
 
 **Baseline:** commit `46deb16df76268e22885f044ba65ffc0d43a38eb` (`Build kettlebell form coach`, 2026-04-28)
 
-**Reviewed branch/worktree:** `agent/adaptive-camera-voice-coach`
+**Reviewed lineage:** the 2 August 2026 adaptive-camera and voice-coach hardening series. This is a dated audit snapshot, not a live branch-status report.
 
 ## Executive finding
 
 The committed baseline was a buildable proof of concept with a coherent browser-pose, analyzer, overlay, and 3D visualization scaffold. It was not evidence-ready: inference ran synchronously on the main thread, the rep state machine could accept discontinuous sequences, calibration was permissive, idle frames could receive positive feedback, dependencies included known high-severity advisories, and there were no lint or test gates.
 
-This branch materially improves the engineering baseline. The current worktree passes lint, type-checking, the deterministic Vitest and Playwright suites, production build verification, and a full dependency audit with zero known vulnerabilities. It adds worker-backed live and selected-clip inference, bounded frame submission, a 4–10 second crop/trim workflow, full-frame adaptive camera selection, an opt-in static British Maritime Command voice pack with a local device fallback whose voice and privacy behaviour vary by platform, stricter abstaining analysis, a responsive and accessible interface, safer claims, CI configuration, and deployment-header defaults.
+The reviewed implementation materially improves the engineering baseline. At the audit date, its release worktree passed lint, type-checking, the deterministic Vitest and Playwright suites, production build verification, and a full dependency audit with zero known vulnerabilities. It adds worker-backed live and selected-clip inference, bounded frame submission, a 4–10 second crop/trim workflow, full-frame adaptive camera selection, an opt-in static British Maritime Command voice pack with a local device fallback whose voice and privacy behaviour vary by platform, stricter abstaining analysis, a responsive and accessible interface, safer claims, CI configuration, and deployment-header defaults.
 
 It is still a **prototype, not a validated form or safety system**. Public swing videos now exercise browser transport and recovery, but they are not a held-out, coach-labelled accuracy corpus. No physical camera session, target-device performance run, qualified coaching comparison, or motion-capture comparison was available in this audit. Those are release gates, not documentation footnotes.
 
@@ -19,7 +19,7 @@ It is still a **prototype, not a validated form or safety system**. Public swing
 | Evidence | Method | What it establishes |
 | --- | --- | --- |
 | Baseline source | `git show 46deb16df76268e22885f044ba65ffc0d43a38eb:…` and an isolated `git archive 46deb16df76268e22885f044ba65ffc0d43a38eb` checkout | Behavior and build state of the named committed baseline without current worktree changes |
-| Current source | Static inspection of the current worktree | Implemented architecture and safeguards |
+| Current source | Static inspection of the release worktree at the audit date | Implemented architecture and safeguards at that point in time |
 | Automated checks | `npm run verify:all` (equivalent to `check`, `test:e2e`, then `audit:all`) | Local software quality gates plus CI configuration pinned to Node `v24.18.1`, bundled npm `11.16.0`, and Python `3.12.13` |
 | Product evidence | Synthetic landmark tests, mocked UI/hook tests, and local Chrome runs with public H.264, VP8, VP9, VFR, exact-EOF, damaged, and no-person fixtures | Deterministic analyzer behavior plus browser transport/recovery—not coaching accuracy |
 

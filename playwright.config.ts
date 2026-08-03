@@ -8,7 +8,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: continuousIntegration,
   retries: continuousIntegration ? 2 : 0,
-  workers: continuousIntegration ? 1 : undefined,
+  workers: continuousIntegration ? 1 : 2,
   reporter: "line",
   outputDir: "test-results",
   expect: {

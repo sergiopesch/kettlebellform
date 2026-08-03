@@ -106,8 +106,11 @@ describe("KB FORM setup experience", () => {
       "aria-pressed",
       "true"
     );
+    expect(screen.getByText("Harbour")).toBeInTheDocument();
+    expect(screen.getByText("Crown")).toBeInTheDocument();
+    expect(screen.queryByText(/Brisk British leadership delivery/i)).not.toBeInTheDocument();
     expect(screen.getByText(/downloads fixed coach audio from this site/i)).toBeInTheDocument();
-    expect(screen.getByText(/Original AI-generated character voices/i)).toBeInTheDocument();
+    expect(screen.getByText(/Original AI-generated voices/i)).toBeInTheDocument();
     expect(screen.getByText(/Technique awareness, not a safety verdict/i)).toBeInTheDocument();
   });
 
@@ -208,7 +211,7 @@ describe("KB FORM setup experience", () => {
     expect((speak.mock.calls[0][0] as Utterance).text).toBe("Voice framing coach on.");
     expect((speak.mock.calls[0][0] as Utterance).voice).toBe(localVoice);
     expect(screen.queryByText(/no microphone or audio recording/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/local device fallback.*privacy may vary/i)).toBeInTheDocument();
+    expect(screen.getByText(/Device voice.*privacy may vary/i)).toBeInTheDocument();
   });
 
   it("keeps the voice toggle name stable while announcing branded-pack loading", async () => {
@@ -240,15 +243,15 @@ describe("KB FORM setup experience", () => {
     })).toBe(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     expect(toggle).toHaveAttribute("aria-busy", "true");
-    expect(toggle).toHaveTextContent("Voice framing coach");
-    expect(toggle).toHaveTextContent("Loading the verified Maritime Command voice pack…");
+    expect(toggle).toHaveAccessibleName("Voice framing coach");
+    expect(screen.getByText("Preparing Crown…")).toBeInTheDocument();
     const loadingStatus = screen.getByText("Loading the British Maritime Command voice…");
     expect(loadingStatus).toBeVisible();
     expect(loadingStatus).toHaveAttribute("role", "status");
 
     finishActivation();
     await waitFor(() => expect(toggle).toHaveAttribute("aria-busy", "false"));
-    expect(toggle).toHaveTextContent("verified voice pack");
+    expect(screen.getByText("Crown · verified pack")).toBeInTheDocument();
   });
 
   it("lets the user choose either AI command profile before enabling speech", async () => {
@@ -306,5 +309,10 @@ describe("KB FORM setup experience", () => {
     expect(controller.toggleCameraMirror).toHaveBeenCalledOnce();
     await user.selectOptions(screen.getByRole("combobox", { name: "Camera" }), "wide");
     expect(controller.selectCamera).toHaveBeenCalledWith("wide");
+    expect(screen.getByRole("combobox", { name: "Coach voice" })).toHaveValue("female-command");
+    expect(screen.getByRole("button", { name: "Voice framing coach" })).toHaveTextContent(
+      "Voice framing coach"
+    );
+    expect(screen.getByText(/Original AI-generated voices/i)).toBeInTheDocument();
   });
 });

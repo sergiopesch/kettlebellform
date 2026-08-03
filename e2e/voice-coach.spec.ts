@@ -144,11 +144,19 @@ test("voice profiles and disclosure remain usable at desktop and mobile widths",
   await expect(femaleProfile.locator(".selection-check")).toBeVisible();
   await expect(maleProfile.locator(".selection-check")).toHaveCount(0);
   await expect(page.locator(".voice-ai-disclosure")).toContainText(
-    "Original AI-generated character voices"
+    "Original AI-generated voices"
   );
   await expect(page.locator(".voice-ai-disclosure")).toContainText(
-    "not affiliated with any military unit"
+    "no military affiliation"
   );
+  await expect(maleProfile).toContainText("Harbour");
+  await expect(femaleProfile).toContainText("Crown");
+  await expect(page.locator(".voice-coach-panel")).not.toContainText(
+    "Brisk British leadership delivery"
+  );
+  expect(
+    await page.locator(".voice-coach-panel").evaluate((element) => element.getBoundingClientRect().height)
+  ).toBeLessThan(180);
   await expect(page.locator(".privacy-line")).toContainText(
     /never uploads microphone audio, camera frames, clips, or landmarks/i
   );
@@ -181,6 +189,23 @@ test("voice profiles and disclosure remain usable at desktop and mobile widths",
     expect(focusStyle.outlineStyle).toBe("solid");
     expect(Number.parseFloat(focusStyle.outlineWidth)).toBeGreaterThanOrEqual(3);
     expect(contrastRatio(rgbChannels(focusStyle.outlineColor), [5, 5, 5])).toBeGreaterThanOrEqual(3);
+
+    const voiceToggle = page.getByRole("button", { name: /Voice framing coach/i });
+    await page.keyboard.press("Tab");
+    await expect(voiceToggle).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(maleProfile).toBeFocused();
+    const voiceFocusStyle = await maleProfile.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        outlineColor: style.outlineColor,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth
+      };
+    });
+    expect(voiceFocusStyle.outlineStyle).toBe("solid");
+    expect(Number.parseFloat(voiceFocusStyle.outlineWidth)).toBeGreaterThanOrEqual(2);
+    expect(contrastRatio(rgbChannels(voiceFocusStyle.outlineColor), [5, 5, 5])).toBeGreaterThanOrEqual(3);
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -193,6 +218,9 @@ test("voice profiles and disclosure remain usable at desktop and mobile widths",
     page.getByRole("button", { name: femaleProfileName }).locator(".selection-check")
   ).toBeVisible();
   await expect(page.locator(".voice-ai-disclosure")).toBeVisible();
+  expect(
+    await page.locator(".voice-coach-panel").evaluate((element) => element.getBoundingClientRect().height)
+  ).toBeLessThan(180);
   await expectNoHorizontalOverflow(page);
   await expectElementWithinViewportWidth(page, ".voice-coach-control");
   expect(pageErrors).toEqual([]);
@@ -244,20 +272,20 @@ test("the verified voice pack loads only after opt-in and never calls a speech p
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   if (browserName === "firefox") {
     await expect(toggle).toHaveAttribute("aria-busy", "true");
-    await expect(toggle).toContainText("Voice framing coach");
-    await expect(toggle).toContainText("Loading the verified Maritime Command voice pack…");
+    await expect(toggle).toHaveAccessibleName("Voice framing coach");
+    await expect(page.locator(".voice-coach-identity")).toContainText("Preparing Harbour…");
     await page.evaluate(() =>
       (window as FirefoxAudioProbeWindow).__KB_FORM_E2E_RELEASE_AUDIO__()
     );
   }
   await expect(toggle).toHaveAttribute("aria-busy", "false");
-  await expect(toggle).toContainText("verified voice pack");
+  await expect(page.locator(".voice-coach-identity")).toContainText("Harbour · verified pack");
   await expect.poll(() => voiceAssets.length).toBe(11);
   expect(new Set(voiceAssets.map((request) => request.url())).size).toBe(11);
 
   await femaleProfile.click();
   await expect(femaleProfile).toHaveAttribute("aria-pressed", "true");
-  await expect(toggle).toContainText("verified voice pack");
+  await expect(page.locator(".voice-coach-identity")).toContainText("Crown · verified pack");
   await expect.poll(() => voiceAssets.length).toBe(22);
   expect(new Set(voiceAssets.map((request) => request.url())).size).toBe(22);
   expect(forbiddenRequests).toEqual([]);
@@ -321,8 +349,8 @@ test("a failed branded asset degrades to the disclosed local fallback", async ({
   await toggle.click();
 
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(toggle).toContainText("local device fallback");
-  await expect(toggle).toContainText("privacy may vary");
+  await expect(page.locator(".voice-coach-identity")).toContainText("Device voice");
+  await expect(page.locator(".voice-coach-identity")).toContainText("privacy may vary");
   await expect(page.getByRole("button", { name: maleProfileName })).toBeDisabled();
   await expect(page.getByRole("button", { name: femaleProfileName })).toBeDisabled();
   await expect(page.locator(".inline-status")).toContainText(

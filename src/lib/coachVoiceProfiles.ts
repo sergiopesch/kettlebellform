@@ -13,35 +13,26 @@ export type VoiceProfileId = "male-command" | "female-command";
 
 export type CoachVoiceProfile = Readonly<{
   id: VoiceProfileId;
-  label: string;
+  descriptor: string;
   accessibleLabel: string;
-  description: string;
-  aiDisclosure: string;
   characterName: string;
-  packId: "maritime-command-v2";
 }>;
 
-const AI_VOICE_DISCLOSURE =
-  "Original AI-generated character voice; not a human coach recording and not affiliated with a military unit.";
+export const COACH_VOICE_DISCLOSURE =
+  "Original AI-generated voices—not human recordings; no military affiliation.";
 
 export const COACH_VOICE_PROFILES = Object.freeze([
   Object.freeze({
     id: "male-command",
-    label: "Maritime Command · British male",
-    accessibleLabel: "British male Maritime Command coach, AI-generated",
-    description: "Brisk British leadership delivery with disciplined warmth and forward drive.",
-    aiDisclosure: AI_VOICE_DISCLOSURE,
-    characterName: "Harbour",
-    packId: "maritime-command-v2"
+    descriptor: "British male",
+    accessibleLabel: "Harbour, British male Maritime Command coach, AI-generated",
+    characterName: "Harbour"
   }),
   Object.freeze({
     id: "female-command",
-    label: "Maritime Command · British female",
-    accessibleLabel: "British female Maritime Command coach, AI-generated",
-    description: "Brisk British leadership delivery with disciplined warmth and forward drive.",
-    aiDisclosure: AI_VOICE_DISCLOSURE,
-    characterName: "Crown",
-    packId: "maritime-command-v2"
+    descriptor: "British female",
+    accessibleLabel: "Crown, British female Maritime Command coach, AI-generated",
+    characterName: "Crown"
   })
 ] satisfies readonly CoachVoiceProfile[]);
 

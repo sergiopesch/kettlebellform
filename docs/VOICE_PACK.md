@@ -7,7 +7,7 @@ KB FORM voice-pack candidate `maritime-command-v2` contains two original fiction
 - **Harbour** — a clean mid-low British baritone with brisk, disciplined warmth and forward drive.
 - **Crown** — a clean mid-low British mezzo/alto with the same pace, attack, confidence, warmth, and forward drive.
 
-Neither character is presented as a recording of a human coach, an imitation of a named person, or a member of a real military unit. “Maritime Command” is a fictional product description. The user-facing disclosure must remain visible wherever the profile is selected.
+Neither character is presented as a recording of a human coach, an imitation of a named person, or a member of a real military unit. “Maritime Command” is a fictional product description. The compact disclosure, “Original AI-generated voices—not human recordings; no military affiliation,” must remain visible wherever the profile is selected; the fuller provenance stays available in settings and this document.
 
 The runtime pack contains exactly 22 files: every combination of two profiles and the eleven exact messages in `src/lib/coachVoicePolicy.ts`. The published files total 323,166 bytes. Across the complete phrase set, Harbour totals 19,300 ms and Crown totals 19,133 ms, a 0.87% duration delta; their mean integrated-loudness gap is 0.036 LU. These measurements establish pair-level timing and level parity, not British authenticity or leadership quality. The pack remains a **candidate pending blind human listening approval**.
 

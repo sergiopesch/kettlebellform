@@ -80,7 +80,9 @@ MediaPipe `0.10.35`, its SIMD WASM runtime, and the full float16 pose model are 
 
 The selectable profiles are original fictional characters—not recordings of a coach, imitations of a named person, or representations of a real military unit:
 
-| Profile | Character | Intended presentation |
+The compact selector shows **Harbour · British male** and **Crown · British female**; Maritime Command remains the pack identity rather than repeated interface copy.
+
+| Pack profile | Character | Intended presentation |
 | --- | --- | --- |
 | Maritime Command · British male | Harbour | Brisk British leadership delivery with disciplined warmth and forward drive |
 | Maritime Command · British female | Crown | The same pace, attack, confidence, warmth, and forward drive |
@@ -91,7 +93,7 @@ The historical v2 identity-design prompt was not retained byte for byte, so that
 
 The pack contains every combination of two profiles and eleven exact allowlisted messages. Each of the 22 clips is 24 kHz mono MP3, mastered between −17 and −15 LUFS with true peak below −1 dBTP. The complete pack is 323,166 bytes. Harbour's phrases total 19,300 ms and Crown's total 19,133 ms—a 0.87% delta—and their mean integrated loudness differs by 0.036 LU. A committed manifest records the exact phrase, model revisions, byte length, duration, loudness, SHA-256, licence, and non-impersonation provenance for every asset. `npm run voice:verify` independently checks the media, manifest, and pair parity with FFmpeg and FFprobe. The v2 pack remains a candidate pending blind human listening approval for accent, energy, naturalness, and intelligibility.
 
-The repository and local production preview include that candidate so its runtime boundary can be tested; inclusion is not human release approval. The live badge points to the current `master` deployment, which may not contain this uncommitted worktree. Confirm the deployed commit and complete the listening gate before describing a deployed pack as approved.
+The repository and local production preview include that candidate so its runtime boundary can be tested; inclusion is not human release approval. The live badge attests only the revision currently deployed from `master`. Confirm that deployed commit and complete the listening gate before describing a deployed pack as approved.
 
 Nothing is fetched before explicit opt-in. The click synchronously starts one low-latency Web Audio context resume, preserving Safari's user-activation requirement, and activation waits for that resume before any native decode. The selected profile's files are streamed in parallel from hashed same-origin URLs under a non-weakenable 15-second per-asset deadline into buffers capped at each manifest-declared byte length. Declared or actual overflow, timeout, cancellation, MIME mismatch, size mismatch, or SHA-256 mismatch fails closed before decoding. Valid clips pass through one settlement-owned decode queue, avoiding browser decoder fan-out, and are cached in memory. A non-weakenable eight-second whole-activation deadline covers resume, fetch, digest, and decode. A failed client is permanently retired for the page and context closure begins before the labelled device/visual fallback; branded audio cannot create another context until reload, even if native close never settles. One owned source can play at a time; replacement, profile change, motion, pause, page hiding, session end, disable, and unmount invalidate stale work and stop output with a short fade.
 
@@ -124,7 +126,7 @@ npm run dev
 
 `npm ci` runs the model-asset installer. On a first install it needs HTTPS access to the exact revisioned model URL; an already cached model is accepted only after its size and SHA-256 pass. A missing, stalled, oversized, or mismatched download fails the install instead of leaving an unverified runtime asset.
 
-Open the printed `127.0.0.1` URL. For live analysis, keep the recommended **Room view** to request an environment-facing camera when supported or choose **Selfie view**, optionally enable **Voice framing coach**, and select **Start camera**. Once permission is granted, choose among the cameras the browser exposes. Use **Preview coaching** for the camera-free demonstration, or **Analyze a clip** and then **Choose a video** for the local clip workflow. Clip support depends on the browser's native decoders.
+Open the printed `127.0.0.1` URL. For live analysis, keep the recommended **Room view** to request an environment-facing camera when supported or choose **Selfie view**, optionally select Harbour or Crown and switch **Voice framing coach** on, then select **Start camera**. Once permission is granted, choose among the cameras the browser exposes. Use **Preview coaching** for the camera-free demonstration, or **Analyze a clip** and then **Choose a video** for the local clip workflow. Clip support depends on the browser's native decoders.
 
 ### Quality commands
 
@@ -174,7 +176,7 @@ Run `npm run test:e2e:install` once after a fresh checkout, then `npm run verify
 
 ## Validation status
 
-The CI/CodeQL badges describe the current GitHub `master` history and the live badge describes the deployed site; none attests this dirty local worktree. The commands below are the evidence for this worktree until it is committed and its own CI run completes.
+The CI and CodeQL badges attest only the exact GitHub runs they link to, and the live badge describes only the deployed revision. The commands below define the local release gate; every pushed commit must also pass its own CI and deployment checks.
 
 The deterministic Vitest suite covers calibration and its subject/session lifecycle, tracking loss and ambiguity, bounded identity reacquisition, ordered rep phases, abstention, malformed input, feedback/risk behavior, setup UI, full-frame room/selfie constraints, permission-gated enumeration, exact camera switching and cancellation-safe fallback, conditional and user-correctable mirroring, fail-open optical capability probing, the complete 22-asset voice manifest, exact message validation, same-origin/hash/MIME/size enforcement, deadline-bound and byte-capped streaming voice loads, resume-before-decode ordering, serialized decode ownership, whole-activation timeout, Web Audio abort/suspension/fade/cancellation, stale profile switching, accurately labelled local device-speech fallback with platform-privacy caveats, complete shoulder/hip/knee framing gates, recent-motion suppression, extraction-lease ownership across timeout and cancellation, exact end-of-file completion, phase-specific watchdogs, native media errors, damaged-media recovery, bounded authenticated model installation, concurrent installer isolation, and conservative stale-download cleanup. Playwright scenarios cover responsive profile/disclosure rendering, a stable accessible opt-in control, opt-in-only voice-pack loading with no runtime speech-provider request, native Chromium/WebKit decoding, deterministic headless-Firefox audio state, profile switching, and forced-asset fallback.
 

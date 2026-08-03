@@ -14,7 +14,7 @@ Paths:
 - `docs/screenshots/kb-form-clip-result.jpg`
 - `docs/screenshots/kb-form-clip-result-mobile.jpg`
 
-These are browser captures of the implemented setup, camera-free preview, local clip editor, on-device analysis, and fail-closed result states at desktop and mobile widths. The complete set was refreshed on 2 August 2026 for the Arena Red release and shows the current full-frame Room/Selfie selection, visible selected-state checks, opt-in voice control, local crop editor, branded analysis loader, and fail-closed result. The README uses the representative desktop views. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
+These are browser captures of the implemented setup, camera-free preview, local clip editor, on-device analysis, and fail-closed result states at desktop and mobile widths. The setup and preview captures were refreshed on 3 August 2026 after the compact voice-control release; the clip workflow set was refreshed on 2 August 2026 for Arena Red. Together they show the current full-frame Room/Selfie selection, visible selected-state checks, opt-in voice control, local crop editor, branded analysis loader, and fail-closed result. The README uses the representative desktop views. The obsolete generated anatomy/depth hero was removed because it no longer represented the shipped product or its evidence boundary.
 
 ## Favicon
 
